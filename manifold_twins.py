@@ -65,12 +65,13 @@ def load_stan_code(path, cache_dir='./stan_cache'):
 
     try:
         model = pickle.load(open(cache_path, 'rb'))
-        print("Using cached stan model")
+        print("Loaded cached stan model")
     except FileNotFoundError:
         print("Compiling stan model")
         model = pystan.StanModel(model_code=model_code)
         with open(cache_path, 'wb') as cache_file:
             pickle.dump(model, cache_file)
+        print("Compilation successful")
 
     return model
 
@@ -300,6 +301,8 @@ class ManifoldTwinsAnalysis():
                 'mags': start_mags,
                 'dispersion': start_dispersion,
                 'colors': start_colors,
+                'phase_slope': np.zeros(W),
+                'phase_square': np.zeros(W),
             }
 
         stan_data = {
@@ -307,13 +310,16 @@ class ManifoldTwinsAnalysis():
             'W': W,
             'f': self.flux,
             'color_law': color_law,
+            'phases': [i.phase for i in self.spectra],
         }
 
-        model = load_stan_code('./rbtl.stan')
+        model = load_stan_code('./rbtl_phase.stan')
         res = model.optimizing(data=stan_data, init=stan_init)
 
+        self.stan_result = res
+
         self.raw_colors = res['colors']
-        self.model_spectra = res['f_scale']
+        self.model_spectra = res['f_max']
         self.dispersion = res['dispersion']
 
         # Scale the mean spectrum so that its flux values are O(10). This isn't
@@ -335,7 +341,7 @@ class ManifoldTwinsAnalysis():
 
         # Deredden the real spectra and set them to the same scale as the mean
         # spectrum.
-        self.applied_scale = self.mean_spectrum / self.model_spectra
+        self.applied_scale = self.mean_spectrum / res['f_scale']
         self.scale_flux = self.flux * self.applied_scale
         self.scale_fluxerr = self.fluxerr * self.applied_scale
 
@@ -1152,6 +1158,33 @@ class ManifoldTwinsAnalysis():
         plt.legend()
 
         return mags_20
+
+    def plot_same_target_pairings(self):
+        """Plot the pairings with spectra from the same target labeled"""
+        # color_mapping = {i.target: 'C%d' % (j % 10) for j, i in
+                         # enumerate(np.unique(self.spectra))}
+        color_mapping = {i.target: np.random.rand(3) for j, i in
+                         enumerate(np.unique(self.spectra))}
+        colors = [color_mapping[i.target] for i in self.spectra]
+
+        plt.figure()
+        plt.scatter(self.trans[:, 0], self.trans[:, 1], c=colors)
+
+        for i in range(len(self.spectra)):
+            target_1 = self.spectra[i].target
+            trans_1 = self.trans[i]
+            for j in range(len(self.spectra)):
+                target_2 = self.spectra[j].target
+                trans_2 = self.trans[j]
+
+                if i >= j:
+                    continue
+
+                if target_1 != target_2:
+                    continue
+
+                plt.plot([trans_1[0], trans_2[0]], [trans_1[1], trans_2[1]],
+                         c=color_mapping[target_1])
 
     def calculate_salt_hubble_residuals(self):
         """Calculate SALT hubble residuals"""
