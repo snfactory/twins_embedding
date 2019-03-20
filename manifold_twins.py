@@ -79,7 +79,7 @@ def load_stan_code(path, cache_dir='./stan_cache'):
 class ManifoldTwinsAnalysis():
     def __init__(self, idr=default_idr, center_phase=0., phase_width=2.5,
                  bin_velocity=2000., verbosity=1, cut_supernovae=[],
-                 all_spectra=False):
+                 max_count=None):
         """Load the dataset"""
         if verbosity >= 1:
             print("Loading dataset...")
@@ -90,6 +90,8 @@ class ManifoldTwinsAnalysis():
             print("Bin velocity: %.1f" % bin_velocity)
             if cut_supernovae:
                 print("Cutting SNe:  %s" % cut_supernovae)
+            if max_count is not None:
+                print("WARNING: Only keeping first %d spectra!" % max_count)
 
         self.dataset = Dataset.from_idr(basedir + 'idr/' + idr,
                                         load_both_headers=True)
@@ -98,7 +100,20 @@ class ManifoldTwinsAnalysis():
         # ones.
         self.ext_tab = Table.read('../ext_sol/ext_offsets.txt', format='ascii')
 
+        # Load information about the MFRs.
+        self.mfr_tab = Table.read('./scaled_mfr_dump.fits')
+
+        # An MFR is bad if it is missing any of the 3 filters that are used.
+        # The SALT2 residuals show biases and increased dispersions when that
+        # happens.
+        has_f2 = (self.mfr_tab['f2_kernel_nstars'] > 0).astype(int)
+        has_f3 = (self.mfr_tab['f3_kernel_nstars'] > 0).astype(int)
+        has_f4 = (self.mfr_tab['f4_kernel_nstars'] > 0).astype(int)
+        mfr_count = has_f2 + has_f3 + has_f4
+        self.mfr_tab['good'] = mfr_count >= 2
+
         all_raw_spec = []
+        center_mask = []
 
         sys.stdout.flush()
 
@@ -115,35 +130,35 @@ class ManifoldTwinsAnalysis():
                 continue
 
             if len(supernova.spectra) < 5:
-                print_verbose("Cutting %s, not enough spectra for LC fit" %
-                              supernova, verbosity, 2)
+                print_verbose("Cutting %s, not enough spectra to guarantee a "
+                              "good LC fit" % supernova, verbosity, 2)
                 continue
 
-            if all_spectra:
-                # Get every spectrum for every supernova in the range.
-                for spectrum in supernova.get_spectra_in_range(
-                        center_phase - phase_width, center_phase +
-                        phase_width):
-                    if self._check_spectrum(spectrum, verbosity):
-                        all_raw_spec.append(spectrum)
-                    else:
-                        spectrum.usable = False
-            else:
-                # Get the single spectrum closest to maximum.
-                while True:
-                    spectrum = supernova.get_nearest_spectrum(
-                        center_phase, phase_width
-                    )
+            # Get every spectrum for every supernova in the range.
+            used_phases = []
+            for spectrum in supernova.get_spectra_in_range(
+                    center_phase - phase_width, center_phase +
+                    phase_width):
+                if self._check_spectrum(spectrum, verbosity):
+                    all_raw_spec.append(spectrum)
+                    used_phases.append(spectrum.phase)
+                else:
+                    spectrum.usable = False
 
-                    if spectrum is None:
-                        break
-                    elif self._check_spectrum(spectrum, verbosity):
-                        # Found one! Keep it and go to the next target.
-                        all_raw_spec.append(spectrum)
-                        break
-                    else:
-                        spectrum.usable = False
-                        continue
+                if max_count is not None and len(all_raw_spec) > max_count:
+                    break
+
+            used_phases = np.array(used_phases)
+            if len(used_phases) > 0:
+                # Figure out which spectrum was closest to the center of the
+                # bin.
+                target_center_mask = np.zeros(len(used_phases), dtype=bool)
+                target_center_mask[np.argmin(np.abs(used_phases -
+                                                    center_phase))] = True
+                center_mask.extend(target_center_mask)
+
+            if max_count is not None and len(all_raw_spec) > max_count:
+                break
 
         all_flux = []
         all_fluxerr = []
@@ -164,17 +179,23 @@ class ManifoldTwinsAnalysis():
         self.fluxerr = np.array(all_fluxerr)
         self.raw_spectra = np.array(all_raw_spec)
         self.spectra = np.array(all_spec)
+        self.center_mask = np.array(center_mask)
 
         # Pull out variables that we use all the time.
         self.salt_x1 = self.read_meta('salt2.X1')
         self.salt_color = self.read_meta('salt2.Color')
-        self.salt_phases = self.read_meta('salt2.phase')
+        self.salt_phases = self.read_meta('salt2.phase', center_only=False)
         self.redshifts = self.read_meta('host.zcmb')
         self.redshift_errs = self.read_meta('host.zhelio.err')
 
-        # Record which supernovae should be in the validation set.
-        self.train_cut = np.array([i.target['idr.subset'] != 'validation' for i
-                                   in all_spec])
+        # Build a list of targets and a map from spectra to targets.
+        self.targets = np.unique([i.target for i in self.spectra])
+        self.target_map = np.array([self.targets.tolist().index(i.target) for i
+                                    in self.spectra])
+
+        # Record which targets should be in the validation set.
+        self.train_cut = np.array([i['idr.subset'] != 'validation' for i in
+                                   self.targets])
 
     def _check_spectrum(self, spectrum, verbosity=1):
         """Check if a spectrum is valid or not"""
@@ -189,6 +210,15 @@ class ManifoldTwinsAnalysis():
         ext_row = self.ext_tab[self.ext_tab['night'] ==
                                spectrum['obs.exp'][:6]]
         std_weight = ext_row['std_weight']
+
+        # Check if the MFR is good.
+        photometric = spectrum['obs.photo']
+        try:
+            mfr_row = self.mfr_tab[self.mfr_tab['exp'] ==
+                                   spectrum['obs.exp']][0]
+            mfr_good = mfr_row['good']
+        except IndexError:
+            mfr_good = False
 
         redshift = spectrum.target['host.zcmb']
 
@@ -236,16 +266,25 @@ class ManifoldTwinsAnalysis():
         # elif redshift > 0.1:
             # print_verbose("Cutting %s, redshift %.2f > 0.1" %
                           # (spectrum, redshift), verbosity, 2)
+        elif (not photometric) and (not mfr_good):
+            print_verbose("Cutting %s, missing MFR filters" % spectrum,
+                          verbosity, 2)
+            return False
 
         # We made it!
         return True
 
-    def read_meta(self, key):
+    def read_meta(self, key, center_only=True):
         """Read a key from the meta data of each spectrum/target
 
         This will first attempt to read the key in the spectrum object's meta
         data. If it isn't there, then it will try to read from the target
         instead.
+
+        If center_only is True, then a single value is returned for each
+        target, from the spectrum closest to the center of the range if
+        applicable. Otherwise, the values will be returned for each spectrum in
+        the sample.
         """
         if key in self.spectra[0].meta:
             read_spectrum = True
@@ -254,8 +293,13 @@ class ManifoldTwinsAnalysis():
         else:
             raise KeyError("Couldn't find key %s in metadata." % key)
 
+        if center_only:
+            use_spectra = self.spectra[self.center_mask]
+        else:
+            use_spectra = self.spectra
+
         res = []
-        for spec in self.spectra:
+        for spec in use_spectra:
             if read_spectrum:
                 val = spec.meta[key]
             else:
@@ -282,68 +326,89 @@ class ManifoldTwinsAnalysis():
         # color_law = extinction.fm07(self.wave, 1.)
         color_law = extinction.fitzpatrick99(self.wave, 1., 2.8)
 
-        N = len(self.flux)
-        W = len(self.wave)
+        num_targets = len(self.targets)
+        num_spectra = len(self.flux)
+        num_wave = len(self.wave)
 
         def stan_init():
-            start_mean_spectrum = np.mean(self.flux, axis=0)
-            start_mean_spectrum /= np.sum(start_mean_spectrum)
+            # Use the spectrum closest to maximum as a first guess of the
+            # target's spectrum.
+            start_target_flux = np.abs(self.flux[self.center_mask])
+            start_target_spectra = -2.5 * np.log10(start_target_flux)
+            # start_scales = np.mean(center_flux / start_mean_spectrum, axis=1)
+            # start_mags = -2.5*np.log10(start_scales)
 
-            start_scales = np.mean(self.flux / start_mean_spectrum, axis=1)
-            start_mags = -2.5*np.log10(start_scales)
-
-            start_dispersion = 0.1 * start_mean_spectrum
-
-            start_colors = np.zeros(N)
+            start_mean_spectrum = np.mean(start_target_spectra, axis=0)
 
             return {
                 'mean_spectrum': start_mean_spectrum,
-                'mags': start_mags,
-                'dispersion': start_dispersion,
-                'colors': start_colors,
-                'phase_slope': np.zeros(W),
-                'phase_square': np.zeros(W),
+                'target_spectra': start_target_spectra,
+
+                'phase_slope': np.zeros(num_wave),
+                'phase_quadratic': np.zeros(num_wave),
+
+                'target_dispersion': 0.1 * np.ones(num_wave),
+                'measurement_dispersion_floor': 0.02,
+                'phase_quadratic_dispersion': 0.01 * np.ones(num_wave),
+
+                'colors_raw': np.zeros(num_targets - 1),
+                'magnitudes_raw': np.zeros(num_targets - 1),
+                # 'colors': np.zeros(num_targets),
+                # 'magnitudes': start_mags,
+
+                # 'mag_diff': np.zeros(num_wave),
+                # 'length_scale': 0.1,
+                # 'max_spectra_diff': np.zeros((num_targets, num_wave)),
             }
 
         stan_data = {
-            'N': N,
-            'W': W,
-            'f': self.flux,
+            'num_targets': num_targets,
+            'num_spectra': num_spectra,
+            'num_wave': num_wave,
+            'measured_flux': self.flux,
+            'measured_fluxerr': self.fluxerr,
             'color_law': color_law,
             'phases': [i.phase for i in self.spectra],
+            'target_map': self.target_map + 1,  # stan uses 1-based indexing
+
+            'log_wavelength': np.log(self.wave),
         }
 
-        model = load_stan_code('./rbtl_phase.stan')
-        res = model.optimizing(data=stan_data, init=stan_init)
+        self.stan_init = stan_init
+        self.stan_data = stan_data
 
+        model = load_stan_code('./rbtl_phase_multi_2.stan')
+        # model = load_stan_code('./rbtl_gp_2.stan')
+        sys.stdout.flush()
+        res = model.optimizing(data=stan_data, init=stan_init, verbose=True,
+                               iter=100000)
+
+        self.stan_model = model
         self.stan_result = res
 
+        self.colors = res['colors']
+
         self.raw_colors = res['colors']
-        self.model_spectra = res['f_max']
-        self.dispersion = res['dispersion']
+        self.model_flux = res['model_flux']
 
         # Scale the mean spectrum so that its flux values are O(10). This isn't
-        # strictly necessary, but it makes the distances come out to O(1)
+        # strictly necessary, but it makes the distances come out to nice O(1)
         # numbers.
         raw_mean_spec = res['mean_spectrum']
-        self.mean_spectrum = 10 * raw_mean_spec / np.mean(raw_mean_spec)
+        self.applied_scale = 10 / np.mean(raw_mean_spec)
+        self.mean_spectrum = self.applied_scale * raw_mean_spec
 
-        raw_mags = res['mags']
+        mags = res['magnitudes']
         if blinded:
             # Immediately discard validation magnitudes so that we can't
             # accidentally look at them.
-            raw_mags = raw_mags[self.train_cut]
-        self.raw_mags = raw_mags
-
-        # Zeropoint mags and colors.
-        self.mags = self.raw_mags - np.median(self.raw_mags)
-        self.colors = self.raw_colors - np.median(self.raw_colors)
+            mags = mags[self.train_cut]
+        self.mags = mags
 
         # Deredden the real spectra and set them to the same scale as the mean
         # spectrum.
-        self.applied_scale = self.mean_spectrum / res['f_scale']
-        self.scale_flux = self.flux * self.applied_scale
-        self.scale_fluxerr = self.fluxerr * self.applied_scale
+        self.scale_flux = res['scale_flux'] * self.applied_scale
+        self.scale_fluxerr = res['scale_fluxerr'] * self.applied_scale
 
         # Setup a cut to select targets that should have reasonable
         # dispersions.
@@ -362,7 +427,7 @@ class ManifoldTwinsAnalysis():
         """Calculate spectral indicators for all of the features"""
         all_indicators = []
 
-        for idx in range(len(self.flux)):
+        for idx in range(len(self.scale_flux)):
             spec = Spectrum(self.wave, self.scale_flux[idx],
                             self.scale_fluxerr[idx]**2)
             indicators = spec.get_spin_dict()
@@ -889,8 +954,8 @@ class ManifoldTwinsAnalysis():
         )
         all_host_idx = []
         host_mask = []
-        for spectrum in self.spectra:
-            name = spectrum.target.name
+        for target in self.targets:
+            name = target.name
             match = host_data['name'] == name
 
             # Check if found
@@ -1191,8 +1256,8 @@ class ManifoldTwinsAnalysis():
         from astropy.cosmology import Planck15
         # For SALT, can only use SNe that are in the good sample
         self.salt_cut = np.array(
-            [i.target['idr.subset'] in ['training', 'validation'] for i in
-             self.spectra]
+            [i['idr.subset'] in ['training', 'validation'] for i in
+             self.targets]
         )
 
         # We also require reasonable redshifts and colors for the determination
@@ -1206,7 +1271,7 @@ class ManifoldTwinsAnalysis():
         fit_x1 = self.salt_x1[fit_cut]
 
         all_salt_mb = np.array(
-            [i.target.meta['salt2.RestFrameMag_0_B'] for i in self.spectra]
+            [i.meta['salt2.RestFrameMag_0_B'] for i in self.targets]
         )
         fit_salt_mb = all_salt_mb[fit_cut]
 
