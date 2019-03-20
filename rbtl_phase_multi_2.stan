@@ -25,8 +25,10 @@ parameters {
     vector[num_wave] phase_quadratic;
 
     vector<lower=0>[num_wave] target_dispersion;
-    real<lower=0> measurement_dispersion_floor;
+    // real<lower=0> measurement_dispersion_floor;
     vector<lower=0>[num_wave] phase_quadratic_dispersion;
+    vector[num_spectra] gray_offsets;
+    real<lower=0> gray_dispersion;
 
     vector[num_targets-1] colors_raw;
     vector[num_targets-1] magnitudes_raw;
@@ -58,6 +60,7 @@ transformed parameters {
     for (s in 1:num_spectra) {
         model_spectra[s] =
             target_spectra[target_map[s]] +
+            gray_offsets[s] +
             phase_slope * phases[s] +
             phase_quadratic * phases[s] * phases[s];
 
@@ -66,7 +69,7 @@ transformed parameters {
         // model_fluxerr[s] = 1e-5 + 0.05 * model_flux[s];
         model_fluxerr[s] = sqrt(
             square(measured_fluxerr[s]) +
-            square(measurement_dispersion_floor * model_flux[s]) +
+            // square(measurement_dispersion_floor * model_flux[s]) +
             square(phase_quadratic_dispersion * phases[s] * phases[s])
         );
     }
@@ -74,8 +77,11 @@ transformed parameters {
 model {
     mean_spectrum ~ normal(0, 10);
     target_dispersion ~ uniform(0, 1);
-    measurement_dispersion_floor ~ uniform(0, 1);
+    // measurement_dispersion_floor ~ uniform(0, 1);
     phase_quadratic_dispersion ~ uniform(0, 1);
+    gray_dispersion ~ uniform(0, 1);
+
+    gray_offsets ~ normal(0, gray_dispersion);
 
     for (t in 1:num_targets) {
         target_spectra[t] ~ normal(0, 10);
@@ -101,8 +107,9 @@ generated quantities {
             - color_law * colors[t];
 
         scale_flux[t] = exp(-0.4 * log(10) * scale_spectra[t]);
+        // TODO: Better error model here! Should I sample?
         scale_fluxerr[t] = sqrt(
-            square(measurement_dispersion_floor * scale_flux[t])
+            square(0.02 * scale_flux[t])
         );
     }
 }

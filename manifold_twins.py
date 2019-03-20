@@ -77,7 +77,7 @@ def load_stan_code(path, cache_dir='./stan_cache'):
 
 
 class ManifoldTwinsAnalysis():
-    def __init__(self, idr=default_idr, center_phase=0., phase_width=2.5,
+    def __init__(self, idr=default_idr, center_phase=0., phase_width=5.0,
                  bin_velocity=2000., verbosity=1, cut_supernovae=[],
                  max_count=None):
         """Load the dataset"""
@@ -348,13 +348,16 @@ class ManifoldTwinsAnalysis():
                 'phase_quadratic': np.zeros(num_wave),
 
                 'target_dispersion': 0.1 * np.ones(num_wave),
-                'measurement_dispersion_floor': 0.02,
+                # 'measurement_dispersion_floor': 0.02,
                 'phase_quadratic_dispersion': 0.01 * np.ones(num_wave),
 
                 'colors_raw': np.zeros(num_targets - 1),
                 'magnitudes_raw': np.zeros(num_targets - 1),
                 # 'colors': np.zeros(num_targets),
                 # 'magnitudes': start_mags,
+
+                'gray_offsets': np.zeros(num_spectra),
+                'gray_dispersion': 0.02,
 
                 # 'mag_diff': np.zeros(num_wave),
                 # 'length_scale': 0.1,
