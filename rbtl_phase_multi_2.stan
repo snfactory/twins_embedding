@@ -7,6 +7,7 @@ data {
     vector[num_wave] color_law;
     vector[num_spectra] phases;
     int<lower=0> target_map[num_spectra];
+    vector[num_targets] salt_x1;
 }
 transformed data{
     // Sum-to-zero transformations
@@ -23,6 +24,8 @@ parameters {
 
     vector[num_wave] phase_slope;
     vector[num_wave] phase_quadratic;
+    vector[num_wave] phase_slope_x1;
+    vector[num_wave] phase_quadratic_x1;
 
     vector<lower=0>[num_wave] target_dispersion;
     // real<lower=0> measurement_dispersion_floor;
@@ -42,6 +45,7 @@ transformed parameters {
     vector[num_wave] model_spectra[num_spectra];
     vector[num_wave] model_flux[num_spectra];
     vector[num_wave] model_fluxerr[num_spectra];
+    vector[num_wave] model_diff[num_spectra];
 
     vector[num_targets] colors = sum_zero_qr * colors_raw;
     vector[num_targets] magnitudes = sum_zero_qr * magnitudes_raw;
@@ -58,11 +62,16 @@ transformed parameters {
     }
 
     for (s in 1:num_spectra) {
+        model_diff[s] = 
+            gray_offsets[s]
+            + phases[s] * (phase_slope
+                + salt_x1[target_map[s]] * phase_slope_x1)
+            + phases[s] * phases[s] * (phase_quadratic
+                + salt_x1[target_map[s]] * phase_quadratic_x1);
+
         model_spectra[s] =
-            target_spectra[target_map[s]] +
-            gray_offsets[s] +
-            phase_slope * phases[s] +
-            phase_quadratic * phases[s] * phases[s];
+            target_spectra[target_map[s]]
+            + model_diff[s];
 
         model_flux[s] = exp(-0.4 * log(10) * model_spectra[s]);
         // model_fluxerr[s] = fractional_dispersion .* model_flux[s];

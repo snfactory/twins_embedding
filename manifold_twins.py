@@ -77,8 +77,8 @@ def load_stan_code(path, cache_dir='./stan_cache'):
 
 
 class ManifoldTwinsAnalysis():
-    def __init__(self, idr=default_idr, center_phase=0., phase_width=5.0,
-                 bin_velocity=2000., verbosity=1, cut_supernovae=[],
+    def __init__(self, idr=default_idr, center_phase=0., phase_width=5.,
+                 bin_velocity=1000., verbosity=1, cut_supernovae=[],
                  max_count=None):
         """Load the dataset"""
         if verbosity >= 1:
@@ -347,6 +347,9 @@ class ManifoldTwinsAnalysis():
                 'phase_slope': np.zeros(num_wave),
                 'phase_quadratic': np.zeros(num_wave),
 
+                'phase_slope_x1': np.zeros(num_wave),
+                'phase_quadratic_x1': np.zeros(num_wave),
+
                 'target_dispersion': 0.1 * np.ones(num_wave),
                 # 'measurement_dispersion_floor': 0.02,
                 'phase_quadratic_dispersion': 0.01 * np.ones(num_wave),
@@ -373,6 +376,8 @@ class ManifoldTwinsAnalysis():
             'color_law': color_law,
             'phases': [i.phase for i in self.spectra],
             'target_map': self.target_map + 1,  # stan uses 1-based indexing
+
+            'salt_x1': self.salt_x1,
 
             'log_wavelength': np.log(self.wave),
         }
@@ -418,7 +423,7 @@ class ManifoldTwinsAnalysis():
         self.mag_cut = (
             (self.redshift_errs < 0.004) &
             (self.redshifts > 0.02) &
-            (self.colors < 0.5)
+            (self.colors - np.median(self.colors) < 0.5)
         )
 
     def do_embedding(self, n_neighbors=4, n_components=2):
@@ -684,7 +689,7 @@ class ManifoldTwinsAnalysis():
 
         kernel = (
             hyperparameters[1]**2 *
-            kernels.ExpSquaredKernel([hyperparameters[2]**2]*len(use_dim),
+            kernels.Matern32Kernel([hyperparameters[2]**2]*len(use_dim),
                                      ndim=ndim, axes=use_dim)
         )
 
@@ -692,7 +697,7 @@ class ManifoldTwinsAnalysis():
             # Additional kernel in phase direction.
             kernel += (
                 hyperparameters[3]**2 *
-                kernels.ExpSquaredKernel([hyperparameters[4]**2],
+                kernels.Matern32Kernel([hyperparameters[4]**2],
                                          ndim=ndim, axes=ndim-1)
             )
 
