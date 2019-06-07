@@ -26,7 +26,8 @@ default_idr = 'CASCAD'
 # default_idr = 'MARBLE'
 
 cut_supernovae = [
-    'PTF12ecm', # Failed host subtraction in CASCAD and similar productions.
+    # Bad host subtraction failure in CASCAD and similar productions.
+    'PTF12ecm', 
 ]
 
 
@@ -306,189 +307,6 @@ class ManifoldTwinsAnalysis():
 
         return res
 
-    def model_maximum_spectra_single_gp(self, wavelength_idx):
-        """Run the phase interpolation algorithm to model a single wavelength
-        near maximum light.
-
-        This algorithm uses all targets with multiple spectra to model how Type
-        Ia supernovae evolve near maximum light. This method does not rely on
-        knowing the underlying model of Type Ia supernovae and only models the
-        differences. The model is generated in magnitude space, so anything
-        static in between us and the supernova, like dust, does not affect the
-        model.
-
-        The fit is performed using Stan. We only use Stan as a minimizer here,
-        although this model can also be used to produce the full Bayesian
-        posterior of the fits.
-        """
-        num_targets = len(self.targets)
-        num_spectra = len(self.flux)
-
-        spectra_targets = [i.target for i in self.spectra]
-        spectra_target_counts = np.array(
-            [spectra_targets.count(i.target) for i in self.spectra]
-        )
-
-        def stan_init():
-            # Use the spectrum closest to maximum as a first guess of the
-            # target's spectrum.
-            start_maximum_flux = np.abs(self.flux[self.center_mask,
-                                                  wavelength_idx])
-            start_maximum_spectra = -2.5 * np.log10(start_maximum_flux)
-            # start_scales = np.mean(center_flux / start_mean_flux, axis=1)
-            # start_mags = -2.5*np.log10(start_scales)
-
-            return {
-                'maximum_spectra': start_maximum_spectra,
-
-                'phase_slope': 0.,
-                'phase_quadratic': 0.,
-
-                'phase_slope_x1': 0.,
-                'phase_quadratic_x1': 0.,
-
-                'gray_offsets': np.zeros(num_spectra),
-                'gray_dispersion': 0.02,
-
-                # 'phase_slopes': np.zeros(num_targets),
-                # 'phase_slope_mean': 0.,
-                'phase_slope_dispersion': 0.01,
-
-                # 'dispersion_maximum': 0.02,
-                # 'dispersion_slope_fall': 0.01,
-                # 'dispersion_slope_rise': 0.01,
-            }
-
-        target_map = np.array([self.targets.tolist().index(i.target) for i in
-                               self.spectra])
-
-        stan_data = {
-            'num_targets': num_targets,
-            'num_spectra': num_spectra,
-            'measured_flux': self.flux[:, wavelength_idx],
-            'measured_fluxerr': self.fluxerr[:, wavelength_idx],
-            'phases': [i.phase for i in self.spectra],
-
-            'spectra_target_counts': spectra_target_counts,
-            'target_map': target_map + 1,  # stan uses 1-based indexing
-
-            'salt_x1': self.salt_x1,
-        }
-
-        # self.stan_init = stan_init
-        # self.stan_data = stan_data
-
-        # model = load_stan_code('./phase_interpolation_single_wavelength.stan')
-        model = load_stan_code('./phase_interpolation_single_gp.stan')
-        sys.stdout.flush()
-        res = model.optimizing(data=stan_data, init=stan_init, iter=20000)
-        # res = model.optimizing(data=stan_data, init=stan_init, verbose=True,
-                               # iter=20000)
-        # res = model.sampling(data=stan_data, init=stan_init, verbose=True)
-
-        self.stan_model = model
-        self.stan_result = res
-
-    def model_maximum_spectra_single_wavelength(self, wavelength_idx):
-        """Run the phase interpolation algorithm to model a single wavelength
-        near maximum light.
-
-        This algorithm uses all targets with multiple spectra to model how Type
-        Ia supernovae evolve near maximum light. This method does not rely on
-        knowing the underlying model of Type Ia supernovae and only models the
-        differences. The model is generated in magnitude space, so anything
-        static in between us and the supernova, like dust, does not affect the
-        model.
-
-        The fit is performed using Stan. We only use Stan as a minimizer here,
-        although this model can also be used to produce the full Bayesian
-        posterior of the fits.
-        """
-        num_targets = len(self.targets)
-        num_spectra = len(self.flux)
-
-        spectra_targets = [i.target for i in self.spectra]
-        spectra_target_counts = np.array(
-            [spectra_targets.count(i.target) for i in self.spectra]
-        )
-
-        def stan_init():
-            # Use the spectrum closest to maximum as a first guess of the
-            # target's spectrum.
-            start_maximum_flux = np.abs(self.flux[self.center_mask,
-                                                  wavelength_idx])
-            start_maximum_spectra = -2.5 * np.log10(start_maximum_flux)
-            # start_scales = np.mean(center_flux / start_mean_flux, axis=1)
-            # start_mags = -2.5*np.log10(start_scales)
-
-            return {
-                'maximum_spectra': start_maximum_spectra,
-
-                'phase_slope': 0.,
-                'phase_quadratic': 0.,
-
-                'phase_slope_x1': 0.,
-                'phase_quadratic_x1': 0.,
-
-                # 'phase_slopes': np.zeros(num_targets),
-                # 'phase_slope_mean': 0.,
-                # 'phase_slope_dispersion': 0.01,
-
-                'dispersion_maximum': 0.02,
-                'dispersion_slope_fall': 0.01,
-                'dispersion_slope_rise': 0.01,
-            }
-
-        target_map = np.array([self.targets.tolist().index(i.target) for i in
-                               self.spectra])
-
-        stan_data = {
-            'num_targets': num_targets,
-            'num_spectra': num_spectra,
-            'measured_flux': self.flux[:, wavelength_idx],
-            'measured_fluxerr': self.fluxerr[:, wavelength_idx],
-            'phases': [i.phase for i in self.spectra],
-
-            'spectra_target_counts': spectra_target_counts,
-            'target_map': target_map + 1,  # stan uses 1-based indexing
-
-            'salt_x1': self.salt_x1,
-        }
-
-        # self.stan_init = stan_init
-        # self.stan_data = stan_data
-
-        model = load_stan_code('./phase_interpolation_single_wavelength.stan',
-                               verbose=False)
-        sys.stdout.flush()
-        res = model.optimizing(data=stan_data, init=stan_init, iter=20000)
-        # res = model.optimizing(data=stan_data, init=stan_init, verbose=True,
-                               # iter=20000)
-        # res = model.sampling(data=stan_data, init=stan_init, verbose=True)
-
-        return res
-
-        # self.stan_model = model
-        # self.stan_result = res
-
-    def model_maximum_spectra_single(self):
-        """Model the maximum light spectra.
-
-        This algorithm fits a quadratic profile to each wavelength to model the
-        differences near maximum light. We use all spectra in the target range
-        near maximum light to produce the final model.
-        """
-        fit_results = []
-
-        for wave_idx in tqdm.tqdm(range(len(self.wave))):
-            fit_result = self.model_maximum_spectra_single_wavelength(wave_idx)
-            fit_results.append(fit_result)
-
-        fit_results = Table(fit_results)
-        self.interpolation_results = fit_results
-
-        self.maximum_flux = fit_results['model_flux'].data.T
-
     def model_maximum_spectra(self, use_cache=True,
                               use_cached_model_uncertainty=False):
         """Run the phase interpolation algorithm to model spectra near maximum
@@ -555,16 +373,11 @@ class ManifoldTwinsAnalysis():
         phase_coefficients = np.zeros((num_spectra, num_phase_coefficients))
 
         for i, phase in enumerate(self.salt_phases):
-            # print("")
-            # print("Phase: %.2f" % phase)
-
             phase_scale = np.abs((num_phase_coefficients / 2)
                                  * (phase / self.phase_width))
 
             full_bins = int(np.floor(phase_scale))
             remainder = phase_scale - full_bins
-
-            # print(full_bins, remainder)
 
             for j in range(full_bins + 1):
                 if j == full_bins:
@@ -579,63 +392,19 @@ class ManifoldTwinsAnalysis():
 
                 phase_coefficients[i, phase_bin] = weight
 
-        # for i, phase in enumerate(self.salt_phases):
-            # phase_scale = ((num_phase_coefficients / 2)
-                           # * (phase / self.phase_width))
-
-            # min_phase = int(np.floor(phase_scale))
-            # max_phase = int(np.ceil(phase_scale))
-            # max_weight = phase_scale % 1
-            # min_weight = 1 - max_weight
-
-            # if min_phase != 0:
-                # # At maximum, there is no phase interpolation error by
-                # # definition. For other bins, we simply hop over the phase = 0
-                # # bin.
-                # phase_bin = min_phase + num_phase_coefficients // 2
-                # if min_phase > 0:
-                    # phase_bin -= 1
-                # phase_coefficients[i, phase_bin] = min_weight
-
-            # if max_phase != 0:
-                # phase_bin = max_phase + num_phase_coefficients // 2
-                # if max_phase > 0:
-                    # phase_bin -= 1
-                # phase_coefficients[i, phase_bin] = max_weight
-
         def stan_init():
             init_params = {
-                # 'mean_spectrum': start_mean_spectrum,
-                # 'maximum_spectra': start_maximum_spectra,
-
                 'phase_slope': np.zeros(num_wave),
                 'phase_quadratic': np.zeros(num_wave),
 
                 'phase_slope_x1': np.zeros(num_wave),
                 'phase_quadratic_x1': np.zeros(num_wave),
 
-                # 'target_dispersion': 0.1 * np.ones(num_wave),
-                # 'measurement_dispersion_floor': 0.02,
-                # 'phase_quadratic_dispersion': 0.01 * np.ones(num_wave),
-                # 'phase_dispersion_fall_slope': 0.01 * np.ones(num_wave),
-                # 'phase_dispersion_fall_quadratic': 0.01 * np.ones(num_wave),
-                # 'phase_dispersion_rise_slope': 0.01 * np.ones(num_wave),
-                # 'phase_dispersion_rise_quadratic': 0.01 * np.ones(num_wave),
                 'phase_dispersion_coefficients': (
                     0.01 * np.ones((num_phase_coefficients, num_wave))),
 
-                # 'colors_raw': np.zeros(num_targets - 1),
-                # 'magnitudes_raw': np.zeros(num_targets - 1),
-                # 'colors': np.zeros(num_targets),
-                # 'magnitudes': start_mags,
-
                 'gray_offsets': np.zeros(num_spectra),
                 'gray_dispersion_scale': 0.02,
-                # 'gray_dispersion_df': 2.,
-
-                # 'mag_diff': np.zeros(num_wave),
-                # 'length_scale': 0.1,
-                # 'max_spectra_diff': np.zeros((num_targets, num_wave)),
             }
 
             if not use_cached_model_uncertainty:
