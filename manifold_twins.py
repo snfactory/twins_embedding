@@ -26,16 +26,7 @@ default_idr = 'CASCAD'
 # default_idr = 'MARBLE'
 
 cut_supernovae = [
-    # 'LSQ12fhs',   # Iax
-    # 'SN2011ay',   # Iax
-    # 'SN2011de',
-    # 'SNF20070714-007',
-    # 'SNNGC6430',
-    # 'PTF11kjn',
-    # 'PTF12iiq',
-    # 'SNF20070403-000',
-    # 'SNNGC6956',
-    # 'SNF20080723-012',
+    'PTF12ecm', # Failed host subtraction in CASCAD and similar productions.
 ]
 
 
@@ -79,8 +70,8 @@ def load_stan_code(path, cache_dir='./stan_cache', verbose=True):
 
 class ManifoldTwinsAnalysis():
     def __init__(self, idr=default_idr, center_phase=0., phase_width=5.,
-                 bin_velocity=1000., verbosity=1, cut_supernovae=[],
-                 max_count=None):
+                 bin_velocity=1000., verbosity=1,
+                 cut_supernovae=cut_supernovae, max_count=None):
         """Load the dataset"""
         if verbosity >= 1:
             print("Loading dataset...")
@@ -344,7 +335,7 @@ class ManifoldTwinsAnalysis():
             start_maximum_flux = np.abs(self.flux[self.center_mask,
                                                   wavelength_idx])
             start_maximum_spectra = -2.5 * np.log10(start_maximum_flux)
-            # start_scales = np.mean(center_flux / start_mean_spectrum, axis=1)
+            # start_scales = np.mean(center_flux / start_mean_flux, axis=1)
             # start_mags = -2.5*np.log10(start_scales)
 
             return {
@@ -427,7 +418,7 @@ class ManifoldTwinsAnalysis():
             start_maximum_flux = np.abs(self.flux[self.center_mask,
                                                   wavelength_idx])
             start_maximum_spectra = -2.5 * np.log10(start_maximum_flux)
-            # start_scales = np.mean(center_flux / start_mean_spectrum, axis=1)
+            # start_scales = np.mean(center_flux / start_mean_flux, axis=1)
             # start_mags = -2.5*np.log10(start_scales)
 
             return {
@@ -498,7 +489,8 @@ class ManifoldTwinsAnalysis():
 
         self.maximum_flux = fit_results['model_flux'].data.T
 
-    def model_maximum_spectra(self):
+    def model_maximum_spectra(self, use_cache=True,
+                              use_cached_model_uncertainty=False):
         """Run the phase interpolation algorithm to model spectra near maximum
         light.
 
@@ -510,15 +502,37 @@ class ManifoldTwinsAnalysis():
         model.
 
         The fit is performed using Stan. We only use Stan as a minimizer here,
-        although this model can also be used to produce the full Bayesian
-        posterior of the fits.
-        """
+        and we do some analytic calculations inside to make the computation
+        more robust that are not applicable for a proper Bayesian analysis!
 
+        If use_cache is True, then the fitted model will be retrieved from a
+        cache if it exists. Make sure to run with use_cache=False if making
+        modifications to the model!
+
+        If use_cached_model_uncertainty is True, then only the model
+        uncertainty is used from the cached model. The model uncertainty is
+        fairly stable across runs, but take a long time to fit properly.
+        Setting use_cached_model_uncertainty to True overrides the value of
+        use_cache.
+        """
         # Try to load a cached output of this function if we can.
-        cache_result = self.load_interpolation_result('analytic')
-        if cache_result is not None:
-            self.interpolation_result = cache_result
-            return
+        if use_cache or use_cached_model_uncertainty:
+            cache_result = self.load_interpolation_result('analytic')
+            if cache_result is None:
+                # No cache available, skip.
+                pass
+            elif use_cached_model_uncertainty:
+                # Keep the model uncertainty from the previous run, but
+                # recalculate everything else.
+                print("Using cached model uncertainty, but refitting rest of "
+                      "model")
+                phase_dispersion_coefficients = \
+                    cache_result['phase_dispersion_coefficients']
+            elif use_cache:
+                self.interpolation_result = cache_result
+                self.maximum_flux = cache_result['maximum_flux']
+                self.maximum_fluxerr = cache_result['maximum_fluxerr']
+                return
 
         num_targets = len(self.targets)
         num_spectra = len(self.flux)
@@ -590,7 +604,7 @@ class ManifoldTwinsAnalysis():
                 # phase_coefficients[i, phase_bin] = max_weight
 
         def stan_init():
-            return {
+            init_params = {
                 # 'mean_spectrum': start_mean_spectrum,
                 # 'maximum_spectra': start_maximum_spectra,
 
@@ -624,6 +638,12 @@ class ManifoldTwinsAnalysis():
                 # 'max_spectra_diff': np.zeros((num_targets, num_wave)),
             }
 
+            if not use_cached_model_uncertainty:
+                init_params['phase_dispersion_coefficients'] = \
+                    0.01 * np.ones((num_phase_coefficients, num_wave))
+
+            return init_params
+
         self.target_map = np.array([self.targets.tolist().index(i.target) for i
                                     in self.spectra])
 
@@ -647,11 +667,19 @@ class ManifoldTwinsAnalysis():
             # 'log_wavelength': np.log(self.wave),
         }
 
+        if use_cached_model_uncertainty:
+            stan_data['phase_dispersion_coefficients'] = \
+                phase_dispersion_coefficients
+            model_code = ('./phase_interpolation_analytic_fixed_model_'
+                          'uncertainty.stan')
+        else:
+            model_code = './phase_interpolation_analytic.stan'
+
         self.stan_init = stan_init
         self.stan_data = stan_data
 
         # model = load_stan_code('./rbtl_phase_multi_2.stan')
-        model = load_stan_code('./phase_interpolation_analytic.stan')
+        model = load_stan_code(model_code)
         # model = load_stan_code('./rbtl_gp_2.stan')
         sys.stdout.flush()
         res = model.optimizing(data=stan_data, init=stan_init, verbose=True,
@@ -660,6 +688,12 @@ class ManifoldTwinsAnalysis():
 
         # self.stan_model = model
         self.interpolation_result = res
+        self.maximum_flux = self.interpolation_result['maximum_flux']
+        self.maximum_fluxerr = self.interpolation_result['maximum_fluxerr']
+
+        if use_cached_model_uncertainty:
+            self.interpolation_result['phase_dispersion_coefficients'] = \
+                phase_dispersion_coefficients
 
         # Save the output to cache
         cache_result = self.save_interpolation_result('analytic')
@@ -700,97 +734,48 @@ class ManifoldTwinsAnalysis():
         If blinded is True, then the brightnesses of any validation supernovae
         are thrown out.
 
-        The fit is performed using Stan. We only use Stan as a minimizer here,
-        although this model can also be used to produce the full Bayesian
-        posterior of the fits.
+        The fit is performed using Stan. We only use Stan as a minimizer here.
         """
-        # color_law = extinction.fm07(self.wave, 1.)
         color_law = extinction.fitzpatrick99(self.wave, 1., 2.8)
 
         num_targets = len(self.targets)
-        num_spectra = len(self.flux)
         num_wave = len(self.wave)
 
         def stan_init():
             # Use the spectrum closest to maximum as a first guess of the
             # target's spectrum.
-            start_maximum_flux = np.abs(self.flux[self.center_mask])
-            start_maximum_spectra = -2.5 * np.log10(start_maximum_flux)
-            # start_scales = np.mean(center_flux / start_mean_spectrum, axis=1)
-            # start_mags = -2.5*np.log10(start_scales)
-
-            start_mean_spectrum = np.mean(start_maximum_spectra, axis=0)
+            start_mean_flux = np.mean(self.maximum_flux, axis=0)
+            start_fractional_dispersion = 0.1 * np.ones(num_wave)
 
             return {
-                # 'mean_spectrum': start_mean_spectrum,
-                'maximum_spectra': start_maximum_spectra,
+                'mean_flux': start_mean_flux,
+                'fractional_dispersion': start_fractional_dispersion,
 
-                'phase_slope': np.zeros(num_wave),
-                'phase_quadratic': np.zeros(num_wave),
-
-                'phase_slope_x1': np.zeros(num_wave),
-                'phase_quadratic_x1': np.zeros(num_wave),
-
-                # 'target_dispersion': 0.1 * np.ones(num_wave),
-                # 'measurement_dispersion_floor': 0.02,
-                'phase_quadratic_dispersion': 0.01 * np.ones(num_wave),
-
-                # 'colors_raw': np.zeros(num_targets - 1),
-                # 'magnitudes_raw': np.zeros(num_targets - 1),
-                # 'colors': np.zeros(num_targets),
-                # 'magnitudes': start_mags,
-
-                'gray_offsets': np.zeros(num_spectra),
-                'gray_dispersion_scale': 0.02,
-                # 'gray_dispersion_df': 2.,
-
-                # 'mag_diff': np.zeros(num_wave),
-                # 'length_scale': 0.1,
-                # 'max_spectra_diff': np.zeros((num_targets, num_wave)),
+                'colors_raw': np.zeros(num_targets - 1),
+                'magnitudes_raw': np.zeros(num_targets - 1),
             }
-
-        self.target_map = np.array([self.targets.tolist().index(i.target) for i
-                                    in self.spectra])
 
         stan_data = {
             'num_targets': num_targets,
-            'num_spectra': num_spectra,
             'num_wave': num_wave,
-            'measured_flux': self.flux,
-            'measured_fluxerr': self.fluxerr,
-            # 'color_law': color_law,
-            'phases': [i.phase for i in self.spectra],
-            'target_map': self.target_map + 1,  # stan uses 1-based indexing
-
-            'salt_x1': self.salt_x1,
-
-            # 'log_wavelength': np.log(self.wave),
+            'maximum_flux': self.maximum_flux,
+            'maximum_fluxerr': self.maximum_fluxerr,
+            'color_law': color_law,
         }
 
-        self.stan_init = stan_init
-        self.stan_data = stan_data
-
-        # model = load_stan_code('./rbtl_phase_multi_2.stan')
-        model = load_stan_code('./phase_interpolation.stan')
-        # model = load_stan_code('./rbtl_gp_2.stan')
+        model = load_stan_code('./rbtl.stan')
         sys.stdout.flush()
         res = model.optimizing(data=stan_data, init=stan_init, verbose=True,
                                iter=5000)
 
-        self.stan_model = model
-        self.stan_result = res
+        self.rbtl_result = res
 
         self.colors = res['colors']
 
-        self.raw_colors = res['colors']
         self.model_flux = res['model_flux']
+        self.model_fluxerr = res['model_fluxerr']
 
-        # Scale the mean spectrum so that its flux values are O(10). This isn't
-        # strictly necessary, but it makes the distances come out to nice O(1)
-        # numbers.
-        raw_mean_spec = res['mean_spectrum']
-        self.applied_scale = 10 / np.mean(raw_mean_spec)
-        self.mean_spectrum = self.applied_scale * raw_mean_spec
+        self.mean_flux = res['mean_flux']
 
         mags = res['magnitudes']
         if blinded:
@@ -799,10 +784,12 @@ class ManifoldTwinsAnalysis():
             mags = mags[self.train_cut]
         self.mags = mags
 
+        self.model_scales = res['model_scales']
+
         # Deredden the real spectra and set them to the same scale as the mean
         # spectrum.
-        self.scale_flux = res['scale_flux'] * self.applied_scale
-        self.scale_fluxerr = res['scale_fluxerr'] * self.applied_scale
+        self.scale_flux = self.maximum_flux / self.model_scales
+        self.scale_fluxerr = self.maximum_fluxerr / self.model_scales
 
         # Setup a cut to select targets that should have reasonable
         # dispersions.
@@ -812,10 +799,10 @@ class ManifoldTwinsAnalysis():
             (self.colors - np.median(self.colors) < 0.5)
         )
 
-    def do_embedding(self, n_neighbors=4, n_components=2):
+    def do_embedding(self, n_neighbors=10, n_components=3):
         self.iso = Isomap(n_neighbors=n_neighbors, n_components=n_components)
         self.trans = self.iso.fit_transform(self.scale_flux /
-                                            self.mean_spectrum)
+                                            self.mean_flux)
 
     def get_indicators(self):
         """Calculate spectral indicators for all of the features"""
@@ -1481,7 +1468,7 @@ class ManifoldTwinsAnalysis():
         """
         from scipy.spatial.distance import pdist
 
-        use_spec = self.scale_flux / self.mean_spectrum
+        use_spec = self.scale_flux / self.mean_flux
         spec_dists = pdist(use_spec)
         trans_dists = pdist(self.trans)
 
@@ -1500,7 +1487,7 @@ class ManifoldTwinsAnalysis():
         from scipy.stats import percentileofscore
         import pandas as pd
 
-        use_spec = self.scale_flux / self.mean_spectrum
+        use_spec = self.scale_flux / self.mean_flux
         spec_dists = pdist(use_spec)
         trans_dists = pdist(self.trans)
 
@@ -1591,7 +1578,7 @@ class ManifoldTwinsAnalysis():
         from scipy.spatial.distance import pdist
         from scipy.stats import percentileofscore
 
-        scale_spec = (self.scale_flux / self.mean_spectrum)
+        scale_spec = (self.scale_flux / self.mean_flux)
         use_spec = scale_spec[self.mag_cut & self.train_cut]
         use_mag = self.mags[self.mag_cut[self.train_cut]]
 
