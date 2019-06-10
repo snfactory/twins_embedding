@@ -17,13 +17,14 @@ import tqdm
 from specind import Spectrum
 
 
-basedir = '/home/scpdata06/kboone/snfactory/data/snfactory/'
+idr_directory = '/home/scpdata06/kboone/snfactory/data/snfactory/idr/'
+
 # default_idr = 'MARBLE'
 # default_idr = 'BERNICE'
 default_idr = 'CASCAD'
 # default_idr = 'ALLEGv2'
 # default_idr = 'KYLEPSF'
-# default_idr = 'MARBLE'
+# default_idr = 'HICKORY'
 
 cut_supernovae = [
     # Bad host subtraction failure in CASCAD and similar productions.
@@ -69,6 +70,19 @@ def load_stan_code(path, cache_dir='./stan_cache', verbose=True):
     return model
 
 
+def frac_to_mag(fractional_difference):
+    """Convert a fractional difference to a difference in magnitude
+
+    Because this transformation is asymmetric for larger fractional changes, we
+    take the average of positive and negative differences
+    """
+    pos_mag = 2.5*np.log10(1 + fractional_difference)
+    neg_mag = 2.5*np.log10(1 - fractional_difference)
+    mag_diff = (pos_mag - neg_mag) / 2.
+
+    return mag_diff
+
+
 class ManifoldTwinsAnalysis():
     def __init__(self, idr=default_idr, center_phase=0., phase_width=5.,
                  bin_velocity=1000., verbosity=1,
@@ -90,15 +104,17 @@ class ManifoldTwinsAnalysis():
         self.phase_width = phase_width
         self.idr = idr
 
-        self.dataset = Dataset.from_idr(basedir + 'idr/' + idr,
-                                        load_both_headers=True)
+        self.dataset = Dataset.from_idr(
+            os.path.join(idr_directory, idr), load_both_headers=True
+        )
 
         # Load information about the extinction solutions to be able to cut bad
         # ones.
-        self.ext_tab = Table.read('../ext_sol/ext_offsets.txt', format='ascii')
+        self.ext_tab = Table.read('./data/extinction_solution_quality.txt',
+                                  format='ascii')
 
         # Load information about the MFRs.
-        self.mfr_tab = Table.read('./scaled_mfr_dump.fits')
+        self.mfr_tab = Table.read('./data/mfr_quality.fits')
 
         # An MFR is bad if it is missing any of the 3 filters that are used.
         # The SALT2 residuals show biases and increased dispersions when that
@@ -202,6 +218,7 @@ class ManifoldTwinsAnalysis():
                          spectrum['fits.r.timeon']])
 
         s2n_start = spectrum.get_signal_to_noise(3300, 3800)
+        s2n_b = spectrum.get_snf_signal_to_noise('b')
         s2n_end = spectrum.get_signal_to_noise(8100, 8600)
 
         ext_row = self.ext_tab[self.ext_tab['night'] ==
@@ -218,36 +235,32 @@ class ManifoldTwinsAnalysis():
             mfr_good = False
 
         redshift = spectrum.target['host.zcmb']
+        airmass = spectrum['fits.airmass']
 
-        if timeon < 30000:
-            # Time on cut. Weird things happen when the detector was
-            # recently turned on, including red wings. The noise in low
-            # timeon images is very high and systematic, so we throw
-            # them out.
-            print_verbose("Cutting %s, timeon %ds too short." %
-                          (spectrum, timeon), verbosity, 2)
-            return False
-        # elif s2n_u < -150:
-        elif s2n_start < 100:
+        if s2n_start < 100:
             # Signal-to-noise cut. We find that a signal-to-noise of
             # < ~100 in the U-band leads to an added core dispersion of
             # >0.1 mag in the U-band. This is unacceptable for the
             # twins analysis that relies on getting the color right for
             # a single spectrum.
-            # print_verbose("Cutting %s, U-band signal-to-noise %.2f "
-                          # "too low." % (spectrum, s2n_u), verbosity, 2)
             print_verbose("Cutting %s, start signal-to-noise %.2f "
                           "too low." % (spectrum, s2n_start),
                           verbosity, 2)
             return False
-        # elif s2n_end < 50:
-            # # Similarly for the red channel, low signal-to-noises at
-            # # the edge of the spectra lead to increased dispersion and
-            # # outliers for red bands.
-            # print_verbose("Cutting %s, end signal-to-noise %.2f "
-                          # "too low." % (spectrum, s2n_end),
-                          # verbosity, 2)
-        elif std_weight < 0.2:
+        # elif airmass < 1.5:
+            # Airmass cut. We find that airmasses above 1.5 lead to large
+            # residuals in the i-band.
+            # print_verbose("Cutting %s, airmass %.2f too high." %
+                          # (spectrum, airmass), verbosity, 2)
+        # elif timeon < 30000:
+            # Time on cut. Weird things happen when the detector was
+            # recently turned on, including red wings. The noise in low
+            # timeon images is very high and systematic, so we throw
+            # them out.
+            # print_verbose("Cutting %s, timeon %ds too short." %
+                          # (spectrum, timeon), verbosity, 2)
+            # return False
+        # elif std_weight < 0.2:
             # Some nights have poor standard star choices leading to
             # bad extinction solutions. The "standard star weight" is
             # defined as the sum of the observed standard star
@@ -256,17 +269,17 @@ class ManifoldTwinsAnalysis():
             # them. If this value is too low (chosen to be 0.2 from
             # SALT2 residual tests), then the extinction solution can't
             # be properly measured.
-            print_verbose("Cutting %s, poor standard star "
-                          "distribution w=%.2f for extinction solution"
-                          % (spectrum, std_weight), verbosity, 2)
-            return False
+            # print_verbose("Cutting %s, poor standard star "
+                          # "distribution w=%.2f for extinction solution"
+                          # % (spectrum, std_weight), verbosity, 2)
+            # return False
         # elif redshift > 0.1:
             # print_verbose("Cutting %s, redshift %.2f > 0.1" %
                           # (spectrum, redshift), verbosity, 2)
-        elif (not photometric) and (not mfr_good):
-            print_verbose("Cutting %s, missing MFR filters" % spectrum,
-                          verbosity, 2)
-            return False
+        # elif (not photometric) and (not mfr_good):
+            # print_verbose("Cutting %s, missing MFR filters" % spectrum,
+                          # verbosity, 2)
+            # return False
 
         # We made it!
         return True
@@ -422,9 +435,7 @@ class ManifoldTwinsAnalysis():
             'num_wave': num_wave,
             'measured_flux': self.flux,
             'measured_fluxerr': self.fluxerr,
-            # 'color_law': color_law,
             'phases': [i.phase for i in self.spectra],
-            # 'phase_indices': phase_indices,
             'phase_coefficients': phase_coefficients,
             'num_phase_coefficients': num_phase_coefficients,
 
@@ -439,20 +450,21 @@ class ManifoldTwinsAnalysis():
         if use_cached_model_uncertainty:
             stan_data['phase_dispersion_coefficients'] = \
                 phase_dispersion_coefficients
-            model_code = ('./phase_interpolation_analytic_fixed_model_'
-                          'uncertainty.stan')
+            model_code = ('./stan_models/phase_interpolation_analytic_fixed_'
+                          'model_uncertainty.stan')
         else:
-            model_code = './phase_interpolation_analytic.stan'
+            model_code = './stan_models/phase_interpolation_analytic.stan'
 
         self.stan_init = stan_init
         self.stan_data = stan_data
 
-        # model = load_stan_code('./rbtl_phase_multi_2.stan')
         model = load_stan_code(model_code)
-        # model = load_stan_code('./rbtl_gp_2.stan')
         sys.stdout.flush()
         res = model.optimizing(data=stan_data, init=stan_init, verbose=True,
                                iter=20000, history_size=100)
+
+        # For the analytic model, sampling doesn't work because we are
+        # analytically calculating the MLE mean spectrum for each target.
         # res = model.sampling(data=stan_data, init=stan_init, verbose=True)
 
         # self.stan_model = model
@@ -532,7 +544,7 @@ class ManifoldTwinsAnalysis():
             'color_law': color_law,
         }
 
-        model = load_stan_code('./rbtl.stan')
+        model = load_stan_code('./stan_models/rbtl.stan')
         sys.stdout.flush()
         res = model.optimizing(data=stan_data, init=stan_init, verbose=True,
                                iter=5000)
@@ -735,7 +747,115 @@ class ManifoldTwinsAnalysis():
         else:
             fig.colorbar(plot)
 
+    def _evaluate_polynomial(self, coordinates, coefficients, degree):
+        """Evaluate a polynomial
+        
+        Parameters
+        ==========
+        coordinates : numpy.array
+            Coordinates to evaluate the polynomial at. This should have the
+            shape (num_points, num_dimensions). Where num_points is the number
+            of different sets of coordinates to evaluate the polynomial at, and
+            num_dimensions is the number of dimensions for each point.
+        coefficients : numpy.array
+            A list of N coefficients for the polynomial. The length of this
+            depends on the degree and dimension.
+        degree : int
+            The degree of the polynomial. Only degrees of 0, 1 or 2 are
+            supported.
+        """ 
+        dimension = coordinates.shape[-1]
+
+        remaining_coefficients = coefficients
+
+        # Degree 0
+        model = coefficients[0]
+        remaining_coefficients = coefficients[1:]
+
+        # Degree 1
+        if degree >= 1:
+            num_coef = dimension
+            linear_coef = remaining_coefficients[:num_coef]
+            remaining_coefficients = remaining_coefficients[num_coef:]
+
+            for dim in range(dimension):
+                model += linear_coef[dim] * coordinates[:, dim]
+
+        # Degree 2
+        if degree >= 2:
+            num_coef = dimension * (dimension + 1) // 2
+            quad_coef = remaining_coefficients[:num_coef]
+            remaining_coefficients = remaining_coefficients[num_coef:]
+
+            coef_idx = 0
+            for dim1 in range(dimension):
+                for dim2 in range(dim1, dimension):
+                    model += (quad_coef[coef_idx] * coordinates[:, dim1] *
+                              coordinates[:, dim2])
+                    coef_idx += 1
+
+        return model
+
     def apply_polynomial_standardization(self, degree=1):
+        """Apply polynomial standardization to the dataset.
+
+        The degree can be up to 2.
+
+        There is an additional linear term for the color.
+        """
+        opt_min_func = np.std
+
+        if degree not in [0, 1, 2]:
+            message = ("Degree %d not supported for polynomial "
+                       "standardization!" % dimension)
+            raise ManifoldTwinsException(message)
+
+        # Figure out how many parameters we need for the fit. Note that there
+        # is an additional linear term for color.
+        dimension = self.trans.shape[-1]
+        num_parameters = 1
+        if degree >= 1:
+            num_parameters += dimension
+        if degree >= 2:
+            num_parameters += (dimension**2 + dimension) // 2
+
+        def apply_corr(x, cut=None):
+            if cut is not None:
+                cut_mags = self.mags[cut[self.train_cut]]
+                cut_trans = self.trans[cut & self.train_cut]
+                cut_colors = self.colors[cut & self.train_cut]
+            else:
+                cut_mags = self.mags
+                cut_trans = self.trans[self.train_cut]
+                cut_colors = self.colors[self.train_cut]
+
+            model = self._evaluate_polynomial(cut_trans, x, degree)
+
+            diff = cut_mags - model
+
+            return diff
+
+        def to_min(x):
+            corr_residuals = apply_corr(x, self.mag_cut)
+            return (
+                # Target function
+                opt_min_func(corr_residuals) +
+
+                # Lagrange multiplier to keep mean 0.
+                np.mean(corr_residuals)**2
+            )
+
+        res = minimize(to_min, np.zeros(num_parameters))
+        print("Fitted coefficients:")
+        print(res.x)
+
+        self.corr_mags = apply_corr(res.x)
+        cut_corr_mags = self.corr_mags[self.mag_cut[self.train_cut]]
+
+        print("Fit NMAD:       ", math.nmad(cut_corr_mags))
+        print("Fit std:        ", np.std(cut_corr_mags))
+
+    def apply_polynomial_standardization_bad(self, degree=1):
         """Apply polynomial standardization to the dataset.
 
         Note that this standardization uses the target residuals directly, so
@@ -743,6 +863,10 @@ class ManifoldTwinsAnalysis():
 
         The transformation can only be up to dimension 3 for now because that
         is the maximum dimension supported by numpy polyval.
+
+        WARNING: This doesn't do degrees properly because it includes
+        cross-term powers! It also only does in-sample standardization. Using
+        bootstrapping type standardization would be better.
         """
         opt_min_func = np.std
 
@@ -1099,7 +1223,7 @@ class ManifoldTwinsAnalysis():
     def load_host_data(self):
         """Load host data from Rigault et al. 2019"""
         host_data = Table.read(
-            '../data/snfactory/aux/host_properties_rigault_2019.txt',
+            './data/host_properties_rigault_2019.txt',
             format='ascii'
         )
         all_host_idx = []

@@ -36,7 +36,7 @@ transformed parameters {
         model_flux[t] = mean_flux .* model_scales[t];
         model_fluxerr[t] = sqrt(
             square(maximum_fluxerr[t])
-            + square(fractional_dispersion .* model_scales[t])
+            + square(fractional_dispersion .* model_flux[t])
         );
     }
 }
