@@ -1,3 +1,4 @@
+from astropy.cosmology import Planck15 as cosmo
 from astropy.table import Table
 from hashlib import md5
 from idrtools import Dataset, math
@@ -81,6 +82,38 @@ def frac_to_mag(fractional_difference):
     mag_diff = (pos_mag - neg_mag) / 2.
 
     return mag_diff
+
+
+def fill_mask(array, mask, fill_value=np.nan):
+    """Fill in an array with masked out entries.
+    
+    Parameters
+    ==========
+    array : numpy.array with shape (N, ...)
+        Array of elements for the masked entries. The first dimension, N,
+        should be equal to the number of unmasked entries.
+    mask : numpy.array of length M.
+        Mask that was applied to select the entries in array. The selected
+        entries should be set to True in mask, and there should be a total of N
+        True values in mask.
+    fill_value : scalar
+        The value to fill with. Default: np.nan
+
+    Returns
+    =======
+    filled_array : numpy.array with shape (M, ...)
+        An array with the entries of the input array for the entries in mask,
+        and fill_value elsewhere. filled_array[mask] will recover the original
+        array.
+    """
+    filled_shape = array.shape
+    filled_shape = (len(mask),) + filled_shape[1:]
+
+    filled_array = np.zeros(filled_shape, dtype=array.dtype)
+    filled_array[mask] = array
+    filled_array[~mask] = fill_value
+
+    return filled_array
 
 
 class ManifoldTwinsAnalysis():
@@ -200,6 +233,7 @@ class ManifoldTwinsAnalysis():
         self.salt_phases = self.read_meta('salt2.phase', center_only=False)
         self.redshifts = self.read_meta('host.zcmb')
         self.redshift_errs = self.read_meta('host.zhelio.err')
+        self.distance_moduli = cosmo.distmod(self.redshifts).value
 
         # Build a list of targets and a map from spectra to targets.
         self.targets = np.unique([i.target for i in self.spectra])
@@ -207,8 +241,8 @@ class ManifoldTwinsAnalysis():
                                     in self.spectra])
 
         # Record which targets should be in the validation set.
-        self.train_cut = np.array([i['idr.subset'] != 'validation' for i in
-                                   self.targets])
+        self.train_mask = np.array([i['idr.subset'] != 'validation' for i in
+                                    self.targets])
 
     def _check_spectrum(self, spectrum, verbosity=1):
         """Check if a spectrum is valid or not"""
@@ -506,7 +540,8 @@ class ManifoldTwinsAnalysis():
         # No save result
         return None
 
-    def read_between_the_lines(self, blinded=True):
+    def read_between_the_lines(self, mask=None, mask_power_fraction=0.1,
+                               blinded=True):
         """Run the read between the lines algorithm.
 
         This algorithm estimates the brightnesses and colors of every spectrum
@@ -519,13 +554,20 @@ class ManifoldTwinsAnalysis():
         """
         color_law = extinction.fitzpatrick99(self.wave, 1., 2.8)
 
-        num_targets = len(self.targets)
+        if mask is None:
+            mask = np.ones(len(self.targets), dtype=bool)
+
+        use_targets = self.targets[mask]
+        use_maximum_flux = self.maximum_flux[mask]
+        use_maximum_fluxerr = self.maximum_fluxerr[mask]
+
+        num_targets = len(use_targets)
         num_wave = len(self.wave)
 
         def stan_init():
             # Use the spectrum closest to maximum as a first guess of the
             # target's spectrum.
-            start_mean_flux = np.mean(self.maximum_flux, axis=0)
+            start_mean_flux = np.mean(use_maximum_flux, axis=0)
             start_fractional_dispersion = 0.1 * np.ones(num_wave)
 
             return {
@@ -539,8 +581,8 @@ class ManifoldTwinsAnalysis():
         stan_data = {
             'num_targets': num_targets,
             'num_wave': num_wave,
-            'maximum_flux': self.maximum_flux,
-            'maximum_fluxerr': self.maximum_fluxerr,
+            'maximum_flux': use_maximum_flux,
+            'maximum_fluxerr': use_maximum_fluxerr,
             'color_law': color_law,
         }
 
@@ -551,39 +593,74 @@ class ManifoldTwinsAnalysis():
 
         self.rbtl_result = res
 
-        self.colors = res['colors']
+        self.colors = fill_mask(res['colors'], mask)
 
-        self.model_flux = res['model_flux']
-        self.model_fluxerr = res['model_fluxerr']
+        self.model_flux = fill_mask(res['model_flux'], mask)
+        self.model_fluxerr = fill_mask(res['model_fluxerr'], mask)
 
         self.mean_flux = res['mean_flux']
 
-        mags = res['magnitudes']
+        self.mags = fill_mask(res['magnitudes'], mask)
+
         if blinded:
             # Immediately discard validation magnitudes so that we can't
             # accidentally look at them.
-            mags = mags[self.train_cut]
-        self.mags = mags
+            self.mags[~self.train_mask] = np.nan
 
-        self.model_scales = res['model_scales']
+        self.model_scales = fill_mask(res['model_scales'], mask)
 
         # Deredden the real spectra and set them to the same scale as the mean
         # spectrum.
-        self.scale_flux = self.maximum_flux / self.model_scales
-        self.scale_fluxerr = self.maximum_fluxerr / self.model_scales
-
-        # Setup a cut to select targets that should have reasonable
-        # dispersions.
-        self.mag_cut = (
-            (self.redshift_errs < 0.004) &
-            (self.redshifts > 0.02) &
-            (self.colors - np.median(self.colors) < 0.5)
+        self.scale_flux = fill_mask(
+            use_maximum_flux / res['model_scales'], mask
         )
+        self.scale_fluxerr = fill_mask(
+            use_maximum_fluxerr / res['model_scales'], mask
+        )
+
+        # Mask to select targets that have a measured magnitude
+        self.mag_mask = ~np.isnan(self.mags)
+
+        # Generate a mask that indicates which targets can be used for further
+        # analysis. We start with the input mask, and reject any additional
+        # targets whose interpolation uncertainty is large compared to the
+        # intrinsic supernova dispersion.
+        intrinsic_dispersion = frac_to_mag(res['fractional_dispersion'])
+        intrinsic_power = np.sum(intrinsic_dispersion**2)
+        interpolation_uncertainty = frac_to_mag(self.maximum_fluxerr /
+                                                self.maximum_flux)
+        interp_power = np.sum(interpolation_uncertainty**2, axis=1)
+        self.interp_mask = (
+            mask
+            & (interp_power < mask_power_fraction * intrinsic_power)
+        )
+        print("Masking %d/%d targets whose interpolation uncertainty power is "
+              "more than %.3f of the intrinsic power." %
+              (np.sum(~self.interp_mask), len(self.interp_mask),
+               mask_power_fraction))
+
+        # Mask to select targets that have a magnitude that is expected to have
+        # a reasonable dispersion in brightness.
+        with np.errstate(invalid='ignore'):
+            self.redshift_color_mask = (
+                (self.redshift_errs < 0.004)
+                & (self.redshifts > 0.02)
+                & (self.colors - np.nanmedian(self.colors) < 0.5)
+            )
+
+            self.good_mag_mask = (
+                self.mag_mask
+                & self.interp_mask
+                & self.redshift_color_mask
+            )
 
     def do_embedding(self, n_neighbors=10, n_components=3):
         self.iso = Isomap(n_neighbors=n_neighbors, n_components=n_components)
-        self.trans = self.iso.fit_transform(self.scale_flux /
-                                            self.mean_flux)
+        mask = self.interp_mask
+        self.trans = fill_mask(
+            self.iso.fit_transform(self.scale_flux[mask] / self.mean_flux),
+            mask
+        )
 
     def get_indicators(self):
         """Calculate spectral indicators for all of the features"""
@@ -796,145 +873,58 @@ class ManifoldTwinsAnalysis():
 
         return model
 
-    def apply_polynomial_standardization(self, degree=1):
+    def apply_polynomial_standardization(self, degree=1, kind='twins'):
         """Apply polynomial standardization to the dataset.
 
         The degree can be up to 2.
 
-        There is an additional linear term for the color.
+        All of the isomap coordinates are used along with color.
         """
-        opt_min_func = np.std
-
         if degree not in [0, 1, 2]:
             message = ("Degree %d not supported for polynomial "
                        "standardization!" % dimension)
             raise ManifoldTwinsException(message)
 
+        good_trans, good_mags, good_colors, good_mask = self._get_gp_mags(kind)
+        full_trans, full_mags, full_colors, full_mask = \
+            self._get_gp_mags(kind, full=True)
+
         # Figure out how many parameters we need for the fit. Note that there
         # is an additional linear term for color.
-        dimension = self.trans.shape[-1]
+        dimension = good_trans.shape[-1] + 1
         num_parameters = 1
         if degree >= 1:
             num_parameters += dimension
         if degree >= 2:
             num_parameters += (dimension**2 + dimension) // 2
 
-        def apply_corr(x, cut=None):
-            if cut is not None:
-                cut_mags = self.mags[cut[self.train_cut]]
-                cut_trans = self.trans[cut & self.train_cut]
-                cut_colors = self.colors[cut & self.train_cut]
-            else:
-                cut_mags = self.mags
-                cut_trans = self.trans[self.train_cut]
-                cut_colors = self.colors[self.train_cut]
+        def apply_corr(coefficients, trans, mags, colors):
+            stack_x = np.concatenate((colors[:, None], trans), axis=1)
 
-            model = self._evaluate_polynomial(cut_trans, x, degree)
+            model = self._evaluate_polynomial(stack_x, coefficients, degree)
 
-            diff = cut_mags - model
+            diff = mags - model
 
             return diff
 
         def to_min(x):
-            corr_residuals = apply_corr(x, self.mag_cut)
-            return (
-                # Target function
-                opt_min_func(corr_residuals) +
-
-                # Lagrange multiplier to keep mean 0.
-                np.mean(corr_residuals)**2
-            )
+            corr_residuals = apply_corr(x, good_trans, good_mags, good_colors)
+            result = np.sum(corr_residuals**2)
+            return result
 
         res = minimize(to_min, np.zeros(num_parameters))
         print("Fitted coefficients:")
         print(res.x)
 
-        self.corr_mags = apply_corr(res.x)
-        cut_corr_mags = self.corr_mags[self.mag_cut[self.train_cut]]
+        self.corr_mags = fill_mask(
+            apply_corr(res.x, full_trans, full_mags, full_colors),
+            full_mask
+        )
 
-        print("Fit NMAD:       ", math.nmad(cut_corr_mags))
-        print("Fit std:        ", np.std(cut_corr_mags))
+        good_corr_mags = self.corr_mags[good_mask]
 
-    def apply_polynomial_standardization_bad(self, degree=1):
-        """Apply polynomial standardization to the dataset.
-
-        Note that this standardization uses the target residuals directly, so
-        it is somewhat biased.
-
-        The transformation can only be up to dimension 3 for now because that
-        is the maximum dimension supported by numpy polyval.
-
-        WARNING: This doesn't do degrees properly because it includes
-        cross-term powers! It also only does in-sample standardization. Using
-        bootstrapping type standardization would be better.
-        """
-        opt_min_func = np.std
-
-        # Figure out how many parameters we need for the fit. Note that there
-        # is an additional linear term for color.
-        dimension = self.trans.shape[-1]
-        num_parameters = 1 + (1+degree)**dimension
-        if dimension not in [1, 2, 3]:
-            message = ("Dimension %d not supported for polynomial "
-                       "standardization!" % dimension)
-            raise ManifoldTwinsException(message)
-
-        def extract_coefficients(x):
-            color_slope = x[0]
-            poly_coefficients = np.reshape(x[1:], (degree+1,)*dimension)
-            return color_slope, poly_coefficients
-
-        def apply_corr(x, cut=None):
-            if cut is not None:
-                cut_mags = self.mags[cut[self.train_cut]]
-                cut_trans = self.trans[cut & self.train_cut]
-                cut_colors = self.colors[cut & self.train_cut]
-            else:
-                cut_mags = self.mags
-                cut_trans = self.trans[self.train_cut]
-                cut_colors = self.colors[self.train_cut]
-
-            color_slope, poly_coefficients = extract_coefficients(x)
-
-            # Linear color correction
-            model = color_slope * cut_colors
-
-            # Correction based on embedding
-            t = cut_trans
-            poly = np.polynomial.polynomial
-            if dimension == 1:
-                model += poly.polyval(t[:, 0], poly_coefficients)
-            elif dimension == 2:
-                model += poly.polyval2d(t[:, 0], t[:, 1], poly_coefficients)
-            elif dimension == 3:
-                model += poly.polyval3d(t[:, 0], t[:, 1], t[:, 2],
-                                        poly_coefficients)
-
-            diff = cut_mags - model
-
-            return diff
-
-        def to_min(x):
-            corr_residuals = apply_corr(x, self.mag_cut)
-            return (
-                # Target function
-                opt_min_func(corr_residuals) +
-
-                # Lagrange multiplier to keep mean 0.
-                np.mean(corr_residuals)**2
-            )
-
-        res = minimize(to_min, np.zeros(num_parameters))
-        color_slope, poly_coefficients = extract_coefficients(res.x)
-        print("Fitted color slope:", color_slope)
-        print("Fitted coefficients:")
-        print(poly_coefficients)
-
-        self.corr_mags = apply_corr(res.x)
-        cut_corr_mags = self.corr_mags[self.mag_cut[self.train_cut]]
-
-        print("Fit NMAD:       ", math.nmad(cut_corr_mags))
-        print("Fit std:        ", np.std(cut_corr_mags))
+        print("Fit NMAD:       ", math.nmad(good_corr_mags))
+        print("Fit std:        ", np.std(good_corr_mags))
 
     def _build_gp(self, x, hyperparameters=None, phase=False):
         """Build a george Gaussian Process object and kernels.
@@ -1044,27 +1034,38 @@ class ManifoldTwinsAnalysis():
             return all_preds
 
     def _get_gp_mags(self, kind='twins', full=False):
-        if full:
-            use_trans = self.trans[self.train_cut]
-            if kind == 'twins':
-                use_mags = self.mags
-            elif kind == 'salt2':
-                use_mags = self.salt_hr[self.train_cut]
+        if kind == 'twins':
+            mags = self.mags
+            colors = self.colors
+            if full:
+                mask = self.mag_mask
+            else:
+                mask = self.good_mag_mask
+        elif kind == 'salt' or kind == 'salt_raw':
+            if kind == 'salt':
+                mags = self.salt_hr
+            elif kind == 'salt_raw':
+                mags = self.salt_hr_raw
+            colors = self.salt_color
+            if full:
+                mask = self.salt_mask & self.interp_mask
+            else:
+                mask = self.good_salt_mask & self.interp_mask
         else:
-            use_trans = self.trans[self.mag_cut & self.train_cut]
-            if kind == 'twins':
-                use_mags = self.mags[self.mag_cut[self.train_cut]]
-            elif kind == 'salt2':
-                use_mags = self.salt_hr[self.mag_cut & self.train_cut]
+            raise ManifoldTwinsException("Unknown kind %s!" % kind)
 
-        return use_trans, use_mags
+        use_mags = mags[mask]
+        use_colors = colors[mask]
+        use_trans = self.trans[mask]
+
+        return use_trans, use_mags, use_colors, mask
 
     def _calculate_gp_residuals(self, hyperparameters=None, kind='twins',
                                 **kwargs):
         """Calculate the GP prediction residuals for a set of
         hyperparameters
         """
-        use_trans, use_mags = self._get_gp_mags(kind)
+        use_trans, use_mags, use_colors, use_mask = self._get_gp_mags(kind)
 
         preds = self._predict_gp_oos(use_trans, use_mags, hyperparameters,
                                      **kwargs)
@@ -1080,61 +1081,30 @@ class ManifoldTwinsAnalysis():
         """Fit a Gaussian Process to predict magnitudes for the data."""
         print("Fitting GP hyperparameters...")
 
-        use_trans, use_mags = self._get_gp_mags(kind)
+        good_trans, good_mags, use_colors, good_mask = self._get_gp_mags(kind)
 
         def to_min(x):
-            gp = self._build_gp(use_trans, x)
-            return -gp.log_likelihood(use_mags)
+            gp = self._build_gp(good_trans, x)
+            return -gp.log_likelihood(good_mags)
 
         res = minimize(to_min, [0.1, 0.3, 5])
         print("Fit result:")
         print(res)
         self.gp_hyperparameters = res.x
 
-        full_trans, full_mags = self._get_gp_mags(kind, full=True)
+        full_trans, full_mags, full_colors, full_mask = \
+            self._get_gp_mags(kind, full=True)
 
         preds = self._predict_gp_oos(
             full_trans, full_mags,
-            condition_mask=self.mag_cut[self.train_cut]
+            condition_mask=good_mask[full_mask]
         )
 
-        self.corr_mags = full_mags - preds
-        cut_corr_mags = self.corr_mags[self.mag_cut[self.train_cut]]
+        self.corr_mags = fill_mask(full_mags - preds, full_mask)
+        good_corr_mags = self.corr_mags[good_mask]
 
-        print("Fit NMAD:       ", math.nmad(cut_corr_mags))
-        print("Fit std:        ", np.std(cut_corr_mags))
-
-    def fit_gp_phase(self, verbose=True, kind='twins'):
-        """Fit a Gaussian Process to predict magnitudes for the data."""
-        print("Fitting GP hyperparameters...")
-
-        use_trans, use_mags = self._get_gp_mags(kind)
-
-        use_phases = self.salt_phases[self.mag_cut & self.train_cut]
-
-        full_trans = np.vstack([use_trans.T, use_phases]).T
-
-        def to_min(x):
-            gp = self._build_gp(full_trans, x, phase=True)
-            return -gp.log_likelihood(use_mags)
-
-        res = minimize(to_min, [0.1, 0.3, 5, 0.3, 2])
-        print("Fit result:")
-        print(res)
-        self.gp_hyperparameters = res.x
-
-        full_trans, full_mags = self._get_gp_mags(kind, full=True)
-
-        preds = self._predict_gp_oos(
-            full_trans, full_mags,
-            condition_mask=self.mag_cut[self.train_cut]
-        )
-
-        self.corr_mags = full_mags - preds
-        cut_corr_mags = self.corr_mags[self.mag_cut[self.train_cut]]
-
-        print("Fit NMAD:       ", math.nmad(cut_corr_mags))
-        print("Fit std:        ", np.std(cut_corr_mags))
+        print("Fit NMAD:       ", math.nmad(good_corr_mags))
+        print("Fit std:        ", np.std(good_corr_mags))
 
     def apply_gp_standardization(self, verbose=True, hyperparameters=None,
                                  phase=False, kind='twins'):
@@ -1157,18 +1127,20 @@ class ManifoldTwinsAnalysis():
             print("Using fixed GP hyperparameters...")
             self.gp_hyperparameters = hyperparameters
 
-        full_trans, full_mags = self._get_gp_mags(kind, full=True)
+        good_trans, good_mags, good_colors, good_mask = self._get_gp_mags(kind)
+        full_trans, full_mags, full_colors, full_mask = \
+            self._get_gp_mags(kind, full=True)
 
         preds = self._predict_gp_oos(
             full_trans, full_mags,
-            condition_mask=self.mag_cut[self.train_cut], phase=phase
+            condition_mask=good_mask[full_mask], phase=phase
         )
 
-        self.corr_mags = full_mags - preds
-        cut_corr_mags = self.corr_mags[self.mag_cut[self.train_cut]]
+        self.corr_mags = fill_mask(full_mags - preds, full_mask)
+        good_corr_mags = self.corr_mags[good_mask]
 
-        print("Fit NMAD:       ", math.nmad(cut_corr_mags))
-        print("Fit std:        ", np.std(cut_corr_mags))
+        print("Fit NMAD:       ", math.nmad(good_corr_mags))
+        print("Fit std:        ", np.std(good_corr_mags))
 
     def predict_gp(self, x, hyperparameters=None, **kwargs):
         """Do the GP prediction at specific points using the full GP
@@ -1178,8 +1150,8 @@ class ManifoldTwinsAnalysis():
         Use _predict_gp_oos or something similar to properly do out of sample
         predictions if you want to predict on the training data.
         """
-        use_trans = self.trans[self.mag_cut & self.train_cut]
-        use_mags = self.mags[self.mag_cut[self.train_cut]]
+        use_trans = self.trans[self.good_mag_mask]
+        use_mags = self.mags[self.good_mag_mask]
 
         preds = self._predict_gp(x, use_trans, use_mags, hyperparameters,
                                  **kwargs)
@@ -1192,10 +1164,10 @@ class ManifoldTwinsAnalysis():
         x = self.trans[:, axis_1]
         y = self.trans[:, axis_2]
 
-        min_x = np.min(x) - border
-        max_x = np.max(x) + border
-        min_y = np.min(y) - border
-        max_y = np.max(y) + border
+        min_x = np.nanmin(x) - border
+        max_x = np.nanmax(x) + border
+        min_y = np.nanmin(y) - border
+        max_y = np.nanmax(y) + border
 
         plot_x, plot_y = np.meshgrid(np.linspace(min_x, max_x, num_points),
                                      np.linspace(min_y, max_y, num_points))
@@ -1216,9 +1188,8 @@ class ManifoldTwinsAnalysis():
         plt.figure()
         plt.imshow(pred[::-1], extent=(min_x, max_x, min_y, max_y),
                    cmap=plt.cm.coolwarm, vmin=-0.2, vmax=0.2)
-        plt.scatter(x[self.train_cut], y[self.train_cut], c=self.mags,
-                    edgecolors='k', vmin=-0.2, vmax=0.2, s=10 + 50 *
-                    self.mag_cut[self.train_cut], cmap=plt.cm.coolwarm)
+        plt.scatter(x, y, c=self.mags, edgecolors='k', vmin=-0.2, vmax=0.2,
+                    s=10 + 50 * self.good_mag_mask, cmap=plt.cm.coolwarm)
 
     def load_host_data(self):
         """Load host data from Rigault et al. 2019"""
@@ -1238,15 +1209,17 @@ class ManifoldTwinsAnalysis():
                 continue
 
             # row = host_data[match][0]
-            all_host_idx.append(np.where(match)[0])
+            all_host_idx.append(np.where(match)[0][0])
             host_mask.append(True)
 
         # Save the loaded data
-        self.host_data = host_data[all_host_idx]
         self.host_mask = np.array(host_mask)
+        fill_host_data = fill_mask(host_data[all_host_idx].as_array(),
+                                   self.host_mask)
+        self.host_data = Table(fill_host_data, names=host_data.columns)
 
-    def plot_host_variable(self, variable, cut=None, mag_type='twins',
-                           match_cuts=False):
+    def plot_host_variable(self, variable, mask=None, mag_type='twins',
+                           match_masks=False, threshold=None):
         """Plot diagnostics for some host variable.
 
         Valid variable names are the keys in the host_data Table that comes
@@ -1256,39 +1229,38 @@ class ManifoldTwinsAnalysis():
         - twins: use the manifold twins magnitudes (default)
         - salt: use the SALT2 corrected Hubble residuals
 
-        If match_cuts is True, then the cuts required for both the twins
+        If match_masks is True, then the masks required for both the twins
         manifold and SALT2 are applied (leaving a smaller dataset).
         """
-        if cut is None:
-            cut = np.ones(len(self.spectra), dtype=bool)
+        if mask is None:
+            mask = np.ones(len(self.targets), dtype=bool)
+
+        if match_masks:
+            mag_mask = mask & self.good_salt_mask & self.good_mag_mask
+        elif mag_type == 'twins':
+            mag_mask = mask & self.good_mag_mask
+        elif mag_type == 'salt':
+            mag_mask = mask & self.good_salt_mask
 
         if mag_type == 'twins':
-            if match_cuts:
-                mag_cut = (self.salt_cut & self.host_mask)[self.train_cut]
-                valid_cut = self.train_cut & self.salt_cut
-            else:
-                mag_cut = self.host_mask[self.train_cut]
-                valid_cut = self.train_cut
-            host_corr_mags = self.corr_mags[mag_cut]
+            host_corr_mags = self.corr_mags
         elif mag_type == 'salt':
-            if match_cuts:
-                mag_cut = self.salt_cut & self.host_mask & self.train_cut
-                valid_cut = self.salt_cut & self.train_cut
-            else:
-                mag_cut = self.salt_cut & self.host_mask
-                valid_cut = self.salt_cut
-            host_corr_mags = self.salt_hr[mag_cut]
+            host_corr_mags = self.salt_hr
+
+        host_mask = self.host_mask
 
         # Find a threshold for a split
-        threshold = np.nanmedian(self.host_data[variable])
-
         host_values = np.squeeze(self.host_data[variable])
-        host_cut_1 = host_values < threshold
-        host_cut_2 = host_values > threshold
-        host_mags_1 = host_corr_mags[host_cut_1[valid_cut[self.host_mask]]
-                                     & cut[valid_cut & self.host_mask]]
-        host_mags_2 = host_corr_mags[host_cut_2[valid_cut[self.host_mask]]
-                                     & cut[valid_cut & self.host_mask]]
+
+        if threshold is None:
+            threshold = np.nanmedian(host_values)
+
+        with np.errstate(invalid='ignore'):
+            host_cut_1 = host_mask & (host_values < threshold)
+            host_cut_2 = host_mask & (host_values > threshold)
+
+        host_mags_1 = host_corr_mags[host_cut_1 & mag_mask]
+        host_mags_2 = host_corr_mags[host_cut_2 & mag_mask]
 
         mean_diff = np.nanmean(host_mags_1) - np.nanmean(host_mags_2)
         mean_diff_err = np.sqrt(
@@ -1305,8 +1277,8 @@ class ManifoldTwinsAnalysis():
         plt.title(variable)
         plt.subplot(2, 2, 1)
         plt.scatter(
-            self.trans[self.host_mask, 0],
-            self.trans[self.host_mask, 1],
+            self.trans[:, 0],
+            self.trans[:, 1],
             c=host_values,
             cmap=plt.cm.coolwarm,
             vmin=threshold - 0.1,
@@ -1317,9 +1289,9 @@ class ManifoldTwinsAnalysis():
 
         plt.subplot(2, 2, 2)
         plt.scatter(
-            host_values[valid_cut[self.host_mask]],
+            host_values,
             host_corr_mags,
-            s=2 + 30 * cut[valid_cut & self.host_mask],
+            s=2 + 30 * mag_mask,
             cmap=plt.cm.coolwarm
         )
         plt.xlabel(variable)
@@ -1328,8 +1300,8 @@ class ManifoldTwinsAnalysis():
         plt.subplot(2, 2, 3)
         plt.scatter(
             host_values,
-            self.trans[self.host_mask, 1],
-            c=self.trans[self.host_mask, 0]
+            self.trans[:, 1],
+            c=self.trans[:, 0]
         )
         plt.xlabel(variable)
         plt.ylabel('Isomap parameter 1')
@@ -1337,23 +1309,21 @@ class ManifoldTwinsAnalysis():
         plt.subplot(2, 2, 4)
         plt.scatter(
             host_values,
-            self.trans[self.host_mask, 0],
-            c=self.trans[self.host_mask, 1]
+            self.trans[:, 0],
+            c=self.trans[:, 1]
         )
         plt.xlabel(variable)
         plt.ylabel('Isomap parameter 0')
 
         plt.tight_layout()
 
-    def plot_host(self, cut=None):
+    def plot_host(self, threshold=None, mask=None):
         """Make an interactive plot of host properties"""
         from ipywidgets import interact, fixed
 
-        if cut is None:
-            cut = self.mag_cut
-
         interact(self.plot_host_variable, variable=self.host_data.keys()[1:],
-                 cut=fixed(cut), mag_type=['twins', 'salt'])
+                 mask=fixed(mask), threshold=fixed(threshold),
+                 mag_type=['twins', 'salt'])
 
     def plot_distances(self):
         """Plot the reconstructed distances from the embedding against the true
@@ -1472,7 +1442,8 @@ class ManifoldTwinsAnalysis():
         from scipy.stats import percentileofscore
 
         scale_spec = (self.scale_flux / self.mean_flux)
-        use_spec = scale_spec[self.mag_cut & self.train_cut]
+        use_spec = scale_spec[self.malphaag_cut & self.train_cut]
+
         use_mag = self.mags[self.mag_cut[self.train_cut]]
 
         spec_dists = pdist(use_spec)
@@ -1525,29 +1496,177 @@ class ManifoldTwinsAnalysis():
                 plt.plot([trans_1[0], trans_2[0]], [trans_1[1], trans_2[1]],
                          c=color_mapping[target_1])
 
+    def _evaluate_salt_hubble_residuals(self, MB, alpha, beta,
+                                        intrinsic_dispersion):
+        """Evaluate SALT Hubble residuals for a given set of standardization
+        parameters
+
+        Parameters
+        ==========
+        MB : float
+            The intrinsic B-band brightness of Type Ia supernovae
+        alpha : float
+            Standardization coefficient for the SALT2 x1 parameter
+        beta : float
+            Standardization coefficient for the SALT2 color parameter
+        intrinsic_dispersion : float
+            Assumed intrinsic dispersion of the sample.
+
+        Returns
+        =======
+        residuals : numpy.array
+            The Hubble residuals for every target in the dataset
+        residual_uncertainties : numpy.array
+            The uncertainties on the Hubble residuals for every target in the
+            dataset.
+        """
+        mb = np.array([i['salt2.RestFrameMag_0_B'] for i in self.targets])
+        mb_err = np.array([i['salt2.RestFrameMag_0_B.err'] for i in
+                           self.targets])
+        x1_err = np.array([i['salt2.X1.err'] for i in self.targets])
+        color_err = np.array([i['salt2.Color.err'] for i in self.targets])
+
+        residuals = (
+            mb
+            - MB
+            - self.distance_moduli
+            + alpha * self.salt_x1
+            - beta * self.salt_color
+        )
+
+        residual_uncertainties = np.sqrt(
+            intrinsic_dispersion**2
+            + mb_err**2
+            + alpha**2 * x1_err**2
+            + beta**2 * color_err**2
+        )
+
+        return residuals, residual_uncertainties
+
     def calculate_salt_hubble_residuals(self):
         """Calculate SALT hubble residuals"""
-        from astropy.cosmology import Planck15
         # For SALT, can only use SNe that are in the good sample
-        self.salt_cut = np.array(
+        self.salt_mask = np.array(
             [i['idr.subset'] in ['training', 'validation'] for i in
              self.targets]
         )
 
         # We also require reasonable redshifts and colors for the determination
-        # of standardization parameters. The mag_cut previously defined works
-        # for this.
-        fit_cut = self.salt_cut & self.mag_cut
+        # of standardization parameters. The redshift_color_mask produced by
+        # the read_between_the_lines algorithm does this.
+        self.good_salt_mask = self.salt_mask & self.redshift_color_mask
+
+        mask = self.good_salt_mask
+
+        # Starting value for intrinsic dispersion. We will update this in each
+        # round to set chi2 = 1
+        intrinsic_dispersion = 0.1
+
+        for i in range(5):
+            def calc_dispersion(MB, alpha, beta, intrinsic_dispersion):
+                residuals, residual_uncertainties = \
+                    self._evaluate_salt_hubble_residuals(
+                        MB, alpha, beta, intrinsic_dispersion
+                    )
+
+                mask_residuals = residuals[mask]
+                mask_residual_uncertainties = residual_uncertainties[mask]
+
+                weights = 1 / mask_residual_uncertainties**2
+
+                dispersion = np.sqrt(
+                    np.sum(weights * mask_residuals**2) / np.sum(weights)
+                    / ((len(mask_residuals) - 1) / len(mask_residuals))
+                )
+
+                return dispersion
+            
+            def to_min(x):
+                return calc_dispersion(*x, intrinsic_dispersion)
+
+            res = minimize(to_min, [-19, 0.13, 3.])
+            
+            MB, alpha, beta = res.x
+            
+            print("Pass %d, MB=%.3f, alpha=%.3f, beta=%.3f" % (i, MB, alpha,
+                                                               beta))
+            
+            # Reestimate intrinsic dispersion.
+            def chisq(intrinsic_dispersion):
+                residuals, residual_uncertainties = \
+                    self._evaluate_salt_hubble_residuals(
+                        MB, alpha, beta, intrinsic_dispersion
+                    )
+
+                mask_residuals = residuals[mask]
+                mask_residual_uncertainties = residual_uncertainties[mask]
+
+                return (
+                    np.sum(mask_residuals**2 / mask_residual_uncertainties**2)
+                    / len(mask_residuals)
+                )
+
+            def to_min(x):
+                chi2 = chisq(x[0])
+                return (chi2 - 1)**2
+
+            res_int_disp = minimize(to_min, [intrinsic_dispersion])
+
+            intrinsic_dispersion = res_int_disp.x[0]
+            print("  -> new intrinsic_dispersion=%.3f" % intrinsic_dispersion)
+
+        self.salt_MB = MB
+        self.salt_alpha = alpha
+        self.salt_beta = beta
+        self.salt_intrinsic_dispersion = intrinsic_dispersion
+
+        residuals, residual_uncertainties = \
+            self._evaluate_salt_hubble_residuals(
+                MB, alpha, beta, intrinsic_dispersion
+            )
+
+        # Set median to 0 to remove absolute flux zeropoint
+        self.salt_hr = residuals
+        self.salt_hr_uncertainties = residual_uncertainties
+
+        # Save raw residuals without alpha and beta corrections applied.
+        raw_residuals, raw_residual_uncertainties = \
+            self._evaluate_salt_hubble_residuals(
+                MB, 0, 0, intrinsic_dispersion
+            )
+        self.salt_hr_raw = raw_residuals - np.mean(raw_residuals)
+
+        print("SALT2 Hubble fit: ")
+        print("    MB:   ", self.salt_MB)
+        print("    alpha:", self.salt_alpha)
+        print("    beta: ", self.salt_beta)
+        print("    σ_int:", self.salt_intrinsic_dispersion)
+        print("    std:  ", np.std(self.salt_hr[self.good_salt_mask]))
+        print("    NMAD: ", math.nmad(self.salt_hr[self.good_salt_mask]))
+
+    def calculate_salt_hubble_residuals_old(self):
+        """Calculate SALT hubble residuals"""
+        from astropy.cosmology import Planck15
+        # For SALT, can only use SNe that are in the good sample
+        self.salt_mask = np.array(
+            [i['idr.subset'] in ['training', 'validation'] for i in
+             self.targets]
+        )
+
+        # We also require reasonable redshifts and colors for the determination
+        # of standardization parameters. The redshift_color_mask produced by
+        # the read_between_the_lines algorithm does this.
+        self.good_salt_mask = self.salt_mask & self.redshift_color_mask
 
         # Determine standardization parameters
-        fit_redshift = self.redshifts[fit_cut]
-        fit_color = self.salt_color[fit_cut]
-        fit_x1 = self.salt_x1[fit_cut]
+        fit_redshift = self.redshifts[self.good_salt_mask]
+        fit_color = self.salt_color[self.good_salt_mask]
+        fit_x1 = self.salt_x1[self.good_salt_mask]
 
         all_salt_mb = np.array(
             [i.meta['salt2.RestFrameMag_0_B'] for i in self.targets]
         )
-        fit_salt_mb = all_salt_mb[fit_cut]
+        fit_salt_mb = all_salt_mb[self.good_salt_mask]
 
         def calc_salt_hr(x, redshift, salt_mb, x1, color):
             salt_hr = (
@@ -1576,5 +1695,5 @@ class ManifoldTwinsAnalysis():
         print("SALT2 Hubble fit: ")
         print("    alpha:", self.salt_alpha)
         print("    beta: ", self.salt_beta)
-        print("    std:  ", np.std(self.salt_hr[fit_cut]))
-        print("    NMAD: ", math.nmad(self.salt_hr[fit_cut]))
+        print("    std:  ", np.std(self.salt_hr[self.good_salt_mask]))
+        print("    NMAD: ", math.nmad(self.salt_hr[self.good_salt_mask]))
