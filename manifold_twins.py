@@ -28,8 +28,10 @@ default_idr = 'CASCAD'
 # default_idr = 'HICKORY'
 
 cut_supernovae = [
-    # Bad host subtraction failure in CASCAD and similar productions.
+    # Bad host subtraction failure in CASCAD and similar productions. This will
+    # be fixed in future productions.
     'PTF12ecm', 
+    'PTF11mty',
 ]
 
 
@@ -630,9 +632,10 @@ class ManifoldTwinsAnalysis():
         interpolation_uncertainty = frac_to_mag(self.maximum_fluxerr /
                                                 self.maximum_flux)
         interp_power = np.sum(interpolation_uncertainty**2, axis=1)
+        self.interp_power_fraction = interp_power / intrinsic_power
         self.interp_mask = (
             mask
-            & (interp_power < mask_power_fraction * intrinsic_power)
+            & (self.interp_power_fraction < mask_power_fraction)
         )
         print("Masking %d/%d targets whose interpolation uncertainty power is "
               "more than %.3f of the intrinsic power." %
@@ -656,9 +659,13 @@ class ManifoldTwinsAnalysis():
 
     def do_embedding(self, n_neighbors=10, n_components=3):
         self.iso = Isomap(n_neighbors=n_neighbors, n_components=n_components)
+
         mask = self.interp_mask
+        # self.iso_diffs = -2.5*np.log10(self.scale_flux / self.mean_flux)
+        self.iso_diffs = self.scale_flux / self.mean_flux - 1
+
         self.trans = fill_mask(
-            self.iso.fit_transform(self.scale_flux[mask] / self.mean_flux),
+            self.iso.fit_transform(self.iso_diffs[mask]),
             mask
         )
 
@@ -676,7 +683,7 @@ class ManifoldTwinsAnalysis():
 
         return all_indicators
 
-    def do_blondin_plot(self, axis_1=0, axis_2=1, only_first=False):
+    def do_component_blondin_plot(self, axis_1=0, axis_2=1, marker_size=40):
         indicators = self.get_indicators()
 
         s1 = indicators['EWSiII6355']
@@ -685,43 +692,45 @@ class ManifoldTwinsAnalysis():
         plt.figure()
 
         cut = s2 > 30
-        plt.scatter(self.trans[cut, axis_1], self.trans[cut, axis_2], s=60,
-                    c='r', label='Cool (CL)')
+        plt.scatter(self.trans[cut, axis_1], self.trans[cut, axis_2],
+                    s=marker_size, c='r', label='Cool (CL)')
         cut = (s2 < 30) & (s1 < 70)
-        plt.scatter(self.trans[cut, axis_1], self.trans[cut, axis_2], s=60,
-                    c='g', label='Shallow silicon (SS)')
+        plt.scatter(self.trans[cut, axis_1], self.trans[cut, axis_2],
+                    s=marker_size, c='g', label='Shallow silicon (SS)')
         cut = (s2 < 30) & (s1 > 70) & (s1 < 100)
-        plt.scatter(self.trans[cut, axis_1], self.trans[cut, axis_2], s=60,
-                    c='black', label='Core normal (CN)')
+        plt.scatter(self.trans[cut, axis_1], self.trans[cut, axis_2],
+                    s=marker_size, c='black', label='Core normal (CN)')
         cut = (s2 < 30) & (s1 > 100)
-        plt.scatter(self.trans[cut, axis_1], self.trans[cut, axis_2], s=60,
-                    c='b', label='Broad line (BL)')
+        plt.scatter(self.trans[cut, axis_1], self.trans[cut, axis_2],
+                    s=marker_size, c='b', label='Broad line (BL)')
 
-        plt.xlabel('First Isomap component')
-        plt.ylabel('Second Isomap component')
+        plt.xlabel('Component %d' % (axis_1 + 1))
+        plt.ylabel('Component %d' % (axis_2 + 1))
 
         plt.legend()
 
-        plt.savefig('./branch_classification.eps')
+    def do_blondin_plot(self, marker_size=40):
+        indicators = self.get_indicators()
 
-        if only_first:
-            return
+        s1 = indicators['EWSiII6355']
+        s2 = indicators['EWSiII5972']
 
         plt.figure()
 
         cut = s2 > 30
-        plt.scatter(s1[cut], s2[cut], s=60, c='r', label='Cool (CL)')
+        plt.scatter(s1[cut], s2[cut], s=marker_size, c='r', label='Cool (CL)')
         cut = (s2 < 30) & (s1 < 70)
-        plt.scatter(s1[cut], s2[cut], s=60, c='g',
+        plt.scatter(s1[cut], s2[cut], s=marker_size, c='g',
                     label='Shallow silicon (SS)')
         cut = (s2 < 30) & (s1 > 70) & (s1 < 100)
-        plt.scatter(s1[cut], s2[cut], s=60, c='black',
+        plt.scatter(s1[cut], s2[cut], s=marker_size, c='black',
                     label='Core normal (CN)')
         cut = (s2 < 30) & (s1 > 100)
-        plt.scatter(s1[cut], s2[cut], s=60, c='b', label='Broad line (BL)')
+        plt.scatter(s1[cut], s2[cut], s=marker_size, c='b',
+                    label='Broad line (BL)')
 
-        plt.xlabel('EW SiII 6355')
-        plt.ylabel('EW SiII 5972')
+        plt.xlabel('SiII 6355 Equivalent Width')
+        plt.ylabel('SiII 5972 Equivalent Width')
 
         plt.legend()
 
@@ -737,17 +746,17 @@ class ManifoldTwinsAnalysis():
         trans = self.trans
 
         cut = s2 > 30
-        ax.scatter(trans[cut, 0], trans[cut, 1], trans[cut, 2], s=60, c='r',
-                   label='Cool (CL)')
+        ax.scatter(trans[cut, 0], trans[cut, 1], trans[cut, 2], s=marker_size,
+                   c='r', label='Cool (CL)')
         cut = (s2 < 30) & (s1 < 70)
-        ax.scatter(trans[cut, 0], trans[cut, 1], trans[cut, 2], s=60, c='g',
-                   label='Shallow silicon (SS)')
+        ax.scatter(trans[cut, 0], trans[cut, 1], trans[cut, 2], s=marker_size,
+                   c='g', label='Shallow silicon (SS)')
         cut = (s2 < 30) & (s1 > 70) & (s1 < 100)
-        ax.scatter(trans[cut, 0], trans[cut, 1], trans[cut, 2], s=60,
+        ax.scatter(trans[cut, 0], trans[cut, 1], trans[cut, 2], s=marker_size,
                    c='black', label='Core normal (CN)')
         cut = (s2 < 30) & (s1 > 100)
-        ax.scatter(trans[cut, 0], trans[cut, 1], trans[cut, 2], s=60, c='b',
-                   label='Broad line (BL)')
+        ax.scatter(trans[cut, 0], trans[cut, 1], trans[cut, 2], s=marker_size,
+                   c='b', label='Broad line (BL)')
 
         ax.set_xlabel('Component 0')
         ax.set_ylabel('Component 1')
@@ -755,10 +764,10 @@ class ManifoldTwinsAnalysis():
 
         ax.legend()
 
-    def scatter(self, variable, cut=None, weak_cut=None, label='',
-                axis_1=0, axis_2=1, axis_3=None, **kwargs):
-        """Make a scatter plot of some variable against the embedded
-        coefficients
+    def scatter(self, variable, mask=None, weak_mask=None, label='', axis_1=0,
+                axis_2=1, axis_3=None, marker_size=40, cmap=plt.cm.coolwarm,
+                **kwargs):
+        """Make a scatter plot of some variable against the Isomap coefficients
 
         variable is the values to use for the color axis of the plot.
 
@@ -777,52 +786,42 @@ class ManifoldTwinsAnalysis():
 
         Any kwargs are passed to plt.scatter directly.
         """
-        # Apply cut
         use_trans = self.trans
-        if cut is not None:
-            use_trans = use_trans[cut]
-            if len(use_trans) != len(variable):
-                variable = variable[cut]
-            if len(use_trans) != len(variable):
-                raise ManifoldTwinsException(
-                    'Coefficients and variable have different lengths!'
-                )
+        use_var = variable
 
-            if weak_cut is not None:
-                if len(use_trans) != len(weak_cut):
-                    weak_cut = weak_cut[cut]
-                if len(use_trans) != len(weak_cut):
-                    raise ManifoldTwinsException(
-                        'Coefficients and weak_cut have different lengths!'
-                    )
+        if mask is not None:
+            use_trans = use_trans[mask]
+            use_var = use_var[mask]
 
-        if weak_cut is None:
+        if weak_mask is None:
             # Constant marker size
-            marker_size = 50
+            marker_size = marker_size
         else:
             # Variable marker size
-            marker_size = 5 + 45 * weak_cut
+            marker_size = 10 + (marker_size - 10) * weak_mask[mask]
 
         fig = plt.figure()
 
         if use_trans.shape[1] >= 3 and axis_3 is not None:
             ax = fig.add_subplot(111, projection='3d')
             plot = ax.scatter(use_trans[:, axis_1], use_trans[:, axis_2],
-                              use_trans[:, axis_3], s=marker_size, c=variable,
-                              **kwargs)
+                              use_trans[:, axis_3], s=marker_size, c=use_var,
+                              cmap=cmap, **kwargs)
             ax.set_zlabel('Component %d' % axis_3)
         else:
             ax = fig.add_subplot(111)
             plot = ax.scatter(use_trans[:, axis_1], use_trans[:, axis_2],
-                              s=marker_size, c=variable, **kwargs)
+                              s=marker_size, c=use_var, cmap=cmap, **kwargs)
 
-        ax.set_xlabel('Component %d' % axis_1)
-        ax.set_ylabel('Component %d' % axis_2)
+        ax.set_xlabel('Component %d' % (axis_1 + 1))
+        ax.set_ylabel('Component %d' % (axis_2 + 1))
 
         if label is not None:
             fig.colorbar(plot, label=label)
         else:
             fig.colorbar(plot)
+
+        plt.tight_layout()
 
     def _evaluate_polynomial(self, coordinates, coefficients, degree):
         """Evaluate a polynomial
@@ -885,12 +884,12 @@ class ManifoldTwinsAnalysis():
                        "standardization!" % dimension)
             raise ManifoldTwinsException(message)
 
-        good_trans, good_mags, good_colors, good_mask = self._get_gp_mags(kind)
-        full_trans, full_mags, full_colors, full_mask = \
-            self._get_gp_mags(kind, full=True)
+        good_trans, good_mags, good_colors, good_pec_vel, good_mask = \
+            self.get_mags(kind)
+        full_trans, full_mags, full_colors, full_pec_vel, full_mask = \
+            self.get_mags(kind, full=True)
 
-        # Figure out how many parameters we need for the fit. Note that there
-        # is an additional linear term for color.
+        # Figure out how many parameters we need for the fit.
         dimension = good_trans.shape[-1] + 1
         num_parameters = 1
         if degree >= 1:
@@ -926,7 +925,7 @@ class ManifoldTwinsAnalysis():
         print("Fit NMAD:       ", math.nmad(good_corr_mags))
         print("Fit std:        ", np.std(good_corr_mags))
 
-    def _build_gp(self, x, hyperparameters=None, phase=False):
+    def _build_gp(self, x, yerr, hyperparameters=None, phase=False):
         """Build a george Gaussian Process object and kernels.
         """
         import george
@@ -935,7 +934,10 @@ class ManifoldTwinsAnalysis():
         if hyperparameters is None:
             hyperparameters = self.gp_hyperparameters
 
-        yerr = hyperparameters[0] * np.ones(len(x))
+        use_yerr = np.sqrt(
+            yerr**2
+            + hyperparameters[1]**2 * np.ones(len(x))
+        )
 
         ndim = x.shape[-1]
         if phase:
@@ -944,50 +946,63 @@ class ManifoldTwinsAnalysis():
             use_dim = list(range(ndim))
 
         kernel = (
-            hyperparameters[1]**2 *
-            kernels.Matern32Kernel([hyperparameters[2]**2]*len(use_dim),
+            hyperparameters[2]**2 *
+            kernels.Matern32Kernel([hyperparameters[3]**2]*len(use_dim),
                                      ndim=ndim, axes=use_dim)
         )
 
         if phase:
             # Additional kernel in phase direction.
             kernel += (
-                hyperparameters[3]**2 *
+                hyperparameters[4]**2 *
                 kernels.Matern32Kernel([hyperparameters[4]**2],
                                          ndim=ndim, axes=ndim-1)
             )
 
         gp = george.GP(kernel)
-        gp.compute(x, yerr)
+        gp.compute(x, use_yerr)
 
-        return gp
+        return gp, hyperparameters[0]
 
-    def _predict_gp(self, pred_x, x, y, hyperparameters=None, return_cov=False,
-                    phase=False, **kwargs):
+    def _predict_gp(self, pred_x, pred_color, cond_x, cond_y, cond_yerr,
+                    hyperparameters=None, return_cov=False, phase=False,
+                    **kwargs):
         """Predict a Gaussian Process on the given data with a single shared
         length scale and assumed intrinsic dispersion
         """
-        gp = self._build_gp(x, hyperparameters, phase=phase)
+        gp, color_slope = self._build_gp(cond_x, cond_yerr, hyperparameters,
+                                         phase=phase)
 
-        pred = gp.predict(y, np.atleast_2d(pred_x), return_cov=return_cov,
+        pred = gp.predict(cond_y, np.atleast_2d(pred_x), return_cov=return_cov,
                           **kwargs)
+
+        if pred_color is not None:
+            pred += pred_color * color_slope
 
         return pred
 
-    def _predict_gp_oos(self, x, y, hyperparameters=None, condition_mask=None,
-                        return_var=False, phase=False, groups=None):
+    def _predict_gp_oos(self, x, y, yerr, color, hyperparameters=None,
+                        condition_mask=None, return_var=False, phase=False,
+                        groups=None):
         """Do out-of-sample Gaussian Process predictions given hyperparameters
 
         A binary mask can be specified as condition_mask to specify a subset of
         the data to use for conditioning the GP. The predictions will be done
         on the full sample.
         """
+        if np.isscalar(color):
+            color = np.ones(len(x)) * color
+
         if condition_mask is None:
             cond_x = x
             cond_y = y
+            cond_yerr = yerr
+            cond_color = color
         else:
             cond_x = x[condition_mask]
             cond_y = y[condition_mask]
+            cond_yerr = yerr[condition_mask]
+            cond_color = color[condition_mask]
 
         # Do out-of-sample predictions for element in the condition sample.
         cond_preds = []
@@ -997,10 +1012,15 @@ class ManifoldTwinsAnalysis():
                 match_idx = groups[idx] == groups
                 del_x = cond_x[~match_idx]
                 del_y = cond_y[~match_idx]
+                del_yerr = cond_yerr[~match_idx]
+                del_color = cond_color[~match_idx]
             else:
                 del_x = np.delete(cond_x, idx, axis=0)
                 del_y = np.delete(cond_y, idx, axis=0)
-            pred = self._predict_gp(cond_x[idx], del_x, del_y, hyperparameters,
+                del_yerr = np.delete(cond_yerr, idx, axis=0)
+                del_color = np.delete(cond_color, idx, axis=0)
+            pred = self._predict_gp(cond_x[idx], cond_color[idx], del_x, del_y,
+                                    del_yerr, hyperparameters,
                                     return_var=return_var, phase=phase)
             if return_var:
                 cond_preds.append(pred[0][0])
@@ -1014,8 +1034,9 @@ class ManifoldTwinsAnalysis():
             if return_var:
                 all_vars = np.array(cond_vars)
         else:
-            other_pred = self._predict_gp(x[~condition_mask], cond_x, cond_y,
-                                          hyperparameters,
+            other_pred = self._predict_gp(x[~condition_mask],
+                                          color[~condition_mask], cond_x,
+                                          cond_y, cond_yerr, hyperparameters,
                                           return_var=return_var, phase=phase)
             all_preds = np.zeros(len(x))
             all_vars = np.zeros(len(x))
@@ -1033,7 +1054,7 @@ class ManifoldTwinsAnalysis():
         else:
             return all_preds
 
-    def _get_gp_mags(self, kind='twins', full=False):
+    def get_mags(self, kind='twins', full=False, peculiar_velocity=300):
         if kind == 'twins':
             mags = self.mags
             colors = self.colors
@@ -1054,21 +1075,28 @@ class ManifoldTwinsAnalysis():
         else:
             raise ManifoldTwinsException("Unknown kind %s!" % kind)
 
+        # Calculate dispersion added to the magnitude due to host galaxy
+        # peculiar velocity
+        pec_vel_dispersion = \
+            (5 / np.log(10)) * (peculiar_velocity / 3e5 / self.redshifts)
+
         use_mags = mags[mask]
         use_colors = colors[mask]
         use_trans = self.trans[mask]
+        use_pec_vel_dispersion = pec_vel_dispersion[mask]
 
-        return use_trans, use_mags, use_colors, mask
+        return use_trans, use_mags, use_colors, use_pec_vel_dispersion, mask
 
     def _calculate_gp_residuals(self, hyperparameters=None, kind='twins',
                                 **kwargs):
         """Calculate the GP prediction residuals for a set of
         hyperparameters
         """
-        use_trans, use_mags, use_colors, use_mask = self._get_gp_mags(kind)
+        use_trans, use_mags, use_colors, use_pec_vel, use_mask = \
+            self.get_mags(kind)
 
-        preds = self._predict_gp_oos(use_trans, use_mags, hyperparameters,
-                                     **kwargs)
+        preds = self._predict_gp_oos(use_trans, use_mags, use_pec_vel,
+                                     use_colors, hyperparameters, **kwargs)
         residuals = use_mags - preds
         return residuals
 
@@ -1077,26 +1105,29 @@ class ManifoldTwinsAnalysis():
         """Calculate the GP dispersion for a set of hyperparameters"""
         return metric(self._calculate_gp_residuals(hyperparameters, **kwargs))
 
-    def fit_gp(self, verbose=True, kind='twins'):
+    def fit_gp(self, verbose=True, kind='twins',
+               start_hyperparameters=[0., 0.05, 0.2, 5]):
         """Fit a Gaussian Process to predict magnitudes for the data."""
         print("Fitting GP hyperparameters...")
 
-        good_trans, good_mags, use_colors, good_mask = self._get_gp_mags(kind)
+        good_trans, good_mags, good_colors, good_pec_vel, good_mask = \
+            self.get_mags(kind)
 
         def to_min(x):
-            gp = self._build_gp(good_trans, x)
-            return -gp.log_likelihood(good_mags)
+            gp, color_slope = self._build_gp(good_trans, good_pec_vel, x)
+            residuals = good_mags - good_colors * color_slope
+            return -gp.log_likelihood(residuals)
 
-        res = minimize(to_min, [0.1, 0.3, 5])
+        res = minimize(to_min, start_hyperparameters)
         print("Fit result:")
         print(res)
         self.gp_hyperparameters = res.x
 
-        full_trans, full_mags, full_colors, full_mask = \
-            self._get_gp_mags(kind, full=True)
+        full_trans, full_mags, full_colors, full_pec_vel, full_mask = \
+            self.get_mags(kind, full=True)
 
         preds = self._predict_gp_oos(
-            full_trans, full_mags,
+            full_trans, full_mags, full_pec_vel, full_colors,
             condition_mask=good_mask[full_mask]
         )
 
@@ -1127,12 +1158,13 @@ class ManifoldTwinsAnalysis():
             print("Using fixed GP hyperparameters...")
             self.gp_hyperparameters = hyperparameters
 
-        good_trans, good_mags, good_colors, good_mask = self._get_gp_mags(kind)
-        full_trans, full_mags, full_colors, full_mask = \
-            self._get_gp_mags(kind, full=True)
+        good_trans, good_mags, good_colors, good_pec_vel, good_mask = \
+            self.get_mags(kind)
+        full_trans, full_mags, full_colors, full_pec_vel, full_mask = \
+            self.get_mags(kind, full=True)
 
         preds = self._predict_gp_oos(
-            full_trans, full_mags,
+            full_trans, full_mags, full_pec_vel, full_colors,
             condition_mask=good_mask[full_mask], phase=phase
         )
 
@@ -1142,7 +1174,8 @@ class ManifoldTwinsAnalysis():
         print("Fit NMAD:       ", math.nmad(good_corr_mags))
         print("Fit std:        ", np.std(good_corr_mags))
 
-    def predict_gp(self, x, hyperparameters=None, **kwargs):
+    def predict_gp(self, x, colors=None, hyperparameters=None, kind='twins',
+                   **kwargs):
         """Do the GP prediction at specific points using the full GP
         conditioning.
 
@@ -1150,19 +1183,31 @@ class ManifoldTwinsAnalysis():
         Use _predict_gp_oos or something similar to properly do out of sample
         predictions if you want to predict on the training data.
         """
-        use_trans = self.trans[self.good_mag_mask]
-        use_mags = self.mags[self.good_mag_mask]
+        use_trans, use_mags, use_colors, use_pec_vel, use_mask = \
+            self.get_mags(kind)
 
-        preds = self._predict_gp(x, use_trans, use_mags, hyperparameters,
-                                 **kwargs)
+        preds = self._predict_gp(x, colors, use_trans, use_mags, use_pec_vel,
+                                 hyperparameters, **kwargs)
 
         return preds
 
-    def plot_gp(self, axis_1=0, axis_2=1, hyperparameters=None, num_points=50,
-                border=0.5):
+    def plot_gp(self, axis_1=0, axis_2=1, hyperparameters=None, mask=None,
+                num_points=50, border=0.5, show_mask=True):
         """Plot the GP predictions with data overlayed."""
         x = self.trans[:, axis_1]
         y = self.trans[:, axis_2]
+        c = self.mags
+
+        if mask is None:
+            mask = self.good_mag_mask
+
+        if show_mask:
+            marker_sizes = 10 + 50 * mask
+        else:
+            marker_sizes = 60
+            x = x[mask]
+            y = y[mask]
+            c = c[mask]
 
         min_x = np.nanmin(x) - border
         max_x = np.nanmax(x) + border
@@ -1180,16 +1225,26 @@ class ManifoldTwinsAnalysis():
         plot_coords[:, axis_1] = flat_plot_x
         plot_coords[:, axis_2] = flat_plot_y
 
-        print(plot_coords.shape)
-
-        pred = self.predict_gp(plot_coords, hyperparameters)
+        pred = self.predict_gp(plot_coords, hyperparameters=hyperparameters)
         pred = pred.reshape(plot_x.shape)
 
         plt.figure()
-        plt.imshow(pred[::-1], extent=(min_x, max_x, min_y, max_y),
-                   cmap=plt.cm.coolwarm, vmin=-0.2, vmax=0.2)
-        plt.scatter(x, y, c=self.mags, edgecolors='k', vmin=-0.2, vmax=0.2,
-                    s=10 + 50 * self.good_mag_mask, cmap=plt.cm.coolwarm)
+        im = plt.imshow(pred[::-1], extent=(min_x, max_x, min_y, max_y),
+                        cmap=plt.cm.coolwarm, vmin=-0.2, vmax=0.2)
+        plt.scatter(x, y, c=c, edgecolors='k', vmin=-0.2, vmax=0.2,
+                    s=marker_sizes, cmap=plt.cm.coolwarm)
+
+        plt.xlabel("Component %d" % (axis_1 + 1))
+        plt.ylabel("Component %d" % (axis_2 + 1))
+
+        # Make a colorbar that is lined up with the plot
+        from mpl_toolkits.axes_grid1 import make_axes_locatable
+        ax = plt.gca()
+        divider = make_axes_locatable(ax)
+        cax = divider.append_axes("right", size="4%", pad=0.25)
+        plt.colorbar(im, cax=cax, label="Magnitude residual")
+
+        plt.tight_layout()
 
     def load_host_data(self):
         """Load host data from Rigault et al. 2019"""
@@ -1331,9 +1386,10 @@ class ManifoldTwinsAnalysis():
         """
         from scipy.spatial.distance import pdist
 
-        use_spec = self.scale_flux / self.mean_flux
-        spec_dists = pdist(use_spec)
-        trans_dists = pdist(self.trans)
+        mask = self.interp_mask
+
+        spec_dists = pdist(self.iso_diffs[mask])
+        trans_dists = pdist(self.trans[mask])
 
         plt.figure()
         plt.scatter(spec_dists, trans_dists * np.median(spec_dists) /
@@ -1350,9 +1406,10 @@ class ManifoldTwinsAnalysis():
         from scipy.stats import percentileofscore
         import pandas as pd
 
-        use_spec = self.scale_flux / self.mean_flux
-        spec_dists = pdist(use_spec)
-        trans_dists = pdist(self.trans)
+        mask = self.interp_mask
+
+        spec_dists = pdist(self.iso_diffs[mask])
+        trans_dists = pdist(self.trans[mask])
 
         splits = {
             'Best 10% of twins': (0, 10),
@@ -1428,23 +1485,17 @@ class ManifoldTwinsAnalysis():
 
         return leakage_matrix
 
-        # Print stats
-        # twins_leakage = np.sum((trans_dists > np.percentile(trans_dists, 10)) &
-                               # twins_cut) / len(twins_cut)
-        # print("Twins leakage:", twins_leakage)
-        # worst_leakage = np.sum((trans_dists < np.percentile(trans_dists, 50)) &
-                               # worst_cut) / len(worst_cut)
-        # print("Worst leakage:", worst_leakage)
-
     def plot_twin_pairings(self):
         """Plot the twins delta M as a function of twinness ala Fakhouri"""
         from scipy.spatial.distance import pdist
         from scipy.stats import percentileofscore
 
-        scale_spec = (self.scale_flux / self.mean_flux)
-        use_spec = scale_spec[self.malphaag_cut & self.train_cut]
+        mask = self.good_mag_mask
 
-        use_mag = self.mags[self.mag_cut[self.train_cut]]
+        use_spec = (self.scale_flux / self.mean_flux)[mask]
+        use_mag = self.mags[mask]
+
+        use_mag -= np.mean(use_mag)
 
         spec_dists = pdist(use_spec)
         delta_mags = pdist(use_mag[:, None])
@@ -1468,33 +1519,6 @@ class ManifoldTwinsAnalysis():
         plt.legend()
 
         return mags_20
-
-    def plot_same_target_pairings(self):
-        """Plot the pairings with spectra from the same target labeled"""
-        # color_mapping = {i.target: 'C%d' % (j % 10) for j, i in
-                         # enumerate(np.unique(self.spectra))}
-        color_mapping = {i.target: np.random.rand(3) for j, i in
-                         enumerate(np.unique(self.spectra))}
-        colors = [color_mapping[i.target] for i in self.spectra]
-
-        plt.figure()
-        plt.scatter(self.trans[:, 0], self.trans[:, 1], c=colors)
-
-        for i in range(len(self.spectra)):
-            target_1 = self.spectra[i].target
-            trans_1 = self.trans[i]
-            for j in range(len(self.spectra)):
-                target_2 = self.spectra[j].target
-                trans_2 = self.trans[j]
-
-                if i >= j:
-                    continue
-
-                if target_1 != target_2:
-                    continue
-
-                plt.plot([trans_1[0], trans_2[0]], [trans_1[1], trans_2[1]],
-                         c=color_mapping[target_1])
 
     def _evaluate_salt_hubble_residuals(self, MB, alpha, beta,
                                         intrinsic_dispersion):
