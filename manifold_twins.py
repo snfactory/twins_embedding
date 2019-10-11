@@ -790,7 +790,7 @@ class ManifoldTwinsAnalysis:
 
         plt.legend()
 
-    def do_blondin_plot_3d(self):
+    def do_blondin_plot_3d(self, marker_size=40):
         fig = plt.figure()
         ax = fig.add_subplot(111, projection=Axes3D.name)
 
@@ -862,18 +862,17 @@ class ManifoldTwinsAnalysis:
 
         variable is the values to use for the color axis of the plot.
 
-        A boolean array can be specified for cut to specify which points to use
-        in the plot. If cut is None, then the full variable list is used.
+        A boolean array can be specified for cut to specify which points to use in the
+        plot. If cut is None, then the full variable list is used.
 
-        The target variable can be passed with or without the cut already
-        applied. This function will check and automatically apply it or ignore
-        it so that the variable array has the same length as the coefficient
-        arrays.
+        The target variable can be passed with or without the cut already applied. This
+        function will check and automatically apply it or ignore it so that the variable
+        array has the same length as the coefficient arrays.
 
-        Optionally, a weak cut can be performed where spectra not passing the
-        cut are plotted as small points rather than being completely omitted.
-        To do this, specify the "weak_cut" parameter with a boolean array that
-        has the length of the the variable array after the base cut.
+        Optionally, a weak cut can be performed where spectra not passing the cut are
+        plotted as small points rather than being completely omitted. To do this,
+        specify the "weak_cut" parameter with a boolean array that has the length of the
+        the variable array after the base cut.
 
         Any kwargs are passed to plt.scatter directly.
         """
@@ -943,16 +942,15 @@ class ManifoldTwinsAnalysis:
         Parameters
         ==========
         coordinates : numpy.array
-            Coordinates to evaluate the polynomial at. This should have the
-            shape (num_points, num_dimensions). Where num_points is the number
-            of different sets of coordinates to evaluate the polynomial at, and
-            num_dimensions is the number of dimensions for each point.
+            Coordinates to evaluate the polynomial at. This should have the shape
+            (num_points, num_dimensions). Where num_points is the number of different
+            sets of coordinates to evaluate the polynomial at, and num_dimensions is the
+            number of dimensions for each point.
         coefficients : numpy.array
-            A list of N coefficients for the polynomial. The length of this
-            depends on the degree and dimension.
+            A list of N coefficients for the polynomial. The length of this depends on
+            the degree and dimension.
         degree : int
-            The degree of the polynomial. Only degrees of 0, 1 or 2 are
-            supported.
+            The degree of the polynomial. Only degrees of 0, 1 or 2 are supported.
         """
         dimension = coordinates.shape[-1]
 
@@ -997,9 +995,7 @@ class ManifoldTwinsAnalysis:
         All of the isomap coordinates are used along with color.
         """
         if degree not in [0, 1, 2]:
-            message = (
-                "Degree %d not supported for polynomial " "standardization!" % dimension
-            )
+            message = "Degree %d not supported for polynomial standardization!" % degree
             raise ManifoldTwinsException(message)
 
         good_trans, good_mags, good_colors, good_pec_vel, good_mask = self.get_mags(
