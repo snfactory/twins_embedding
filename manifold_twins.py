@@ -29,10 +29,10 @@ idr_directory = "/home/kyle/data/snfactory/idr/"
 default_idr = "BLACKSTON"
 
 cut_supernovae = [
-    # Bad host subtraction failure in CASCAD and similar productions. This will
-    # be fixed in future productions.
-    # 'PTF12ecm',
-    # 'PTF11mty',
+    # Remove Iax-like supernovae
+    # "LSQ12fhs",
+    # "SN2005cc",
+    # "SN2011ay",
 ]
 
 
