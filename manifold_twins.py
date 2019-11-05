@@ -518,6 +518,7 @@ class ManifoldTwinsAnalysis:
             "num_phase_coefficients": num_phase_coefficients,
             "spectra_target_counts": spectra_target_counts,
             "target_map": self.target_map + 1,  # stan uses 1-based indexing
+            "maximum_map": np.where(self.center_mask)[0] + 1,
             "salt_x1": self.salt_x1,
             # 'log_wavelength': np.log(self.wave),
         }
