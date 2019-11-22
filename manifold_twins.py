@@ -1,11 +1,9 @@
-from astropy.cosmology import WMAP7 as cosmo
 from astropy.table import Table
 from hashlib import md5
 from idrtools import Dataset, math
 from matplotlib import pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from scipy.optimize import minimize
-from scipy.stats import sigmaclip
 from sklearn.manifold import Isomap
 import extinction
 import numpy as np
@@ -96,9 +94,35 @@ def frac_to_mag(fractional_difference):
     return mag_diff
 
 
+def latex_print(file, text):
+    """Helper for writing out latex automatically.
+
+    This just prints both to a file and to stdout so that we can see what we're doing
+    """
+    print(text)
+    print(text, file=file)
+
+
+def latex_command(file, name, formatstr, val):
+    """Generate a latex command to define a variable."""
+    latex_print(file, "\\newcommand{\\%s}{%s}" % (name, formatstr % val))
+
+
+def latex_std(file, name, val):
+    """Generate a latex command to capture the standard deviation of a parameter"""
+    std, std_err = math.bootstrap_statistic(np.std, val, ddof=1)
+    latex_command(file, name, '%.3f $\\pm$ %.3f', (std, std_err))
+
+
+def latex_nmad(file, name, val):
+    """Generate a latex command to capture the NMAD of a parameter"""
+    nmad, nmad_err = math.bootstrap_statistic(math.nmad, val)
+    latex_command(file, name, '%.3f $\\pm$ %.3f', (nmad, nmad_err))
+
+
 def fill_mask(array, mask, fill_value=np.nan):
     """Fill in an array with masked out entries.
-    
+
     Parameters
     ==========
     array : numpy.array with shape (N, ...)
@@ -878,7 +902,7 @@ class ManifoldTwinsAnalysis:
 
     def _evaluate_polynomial(self, coordinates, coefficients, degree):
         """Evaluate a polynomial
-        
+
         Parameters
         ==========
         coordinates : numpy.array
@@ -1407,7 +1431,7 @@ class ManifoldTwinsAnalysis:
             marker_size=marker_size,
         )
 
-        im = plt.imshow(
+        plt.imshow(
             pred[::-1],
             extent=(min_x, max_x, min_y, max_y),
             cmap=plt.cm.coolwarm_r,
@@ -1582,10 +1606,10 @@ class ManifoldTwinsAnalysis:
         embedding_dists = pdist(self.embedding[mask])
 
         splits = {
-            "Best 10% of spectral twinness": (0, 10),
+            "Best 10% of twinness": (0, 10),
             "10-20%": (10, 20),
             "20-50%": (20, 50),
-            "Worst 50% of spectral twinness": (50, 100),
+            "Worst 50% of twinness": (50, 100),
         }
 
         # Set weight so that the histogram is 1 if we have every element in
@@ -1729,7 +1753,7 @@ class ManifoldTwinsAnalysis:
             dataset.
         """
         mb = -2.5*np.log10(self.salt_fits['x0'].data)
-        x0_err = self.salt_fits['x0_err'].data 
+        x0_err = self.salt_fits['x0_err'].data
         mb_err = frac_to_mag(x0_err / self.salt_fits['x0'].data)
         x1_err = self.salt_fits['x1_err'].data
         color_err = self.salt_fits['c_err'].data
@@ -1863,52 +1887,3 @@ class ManifoldTwinsAnalysis:
         print("    RMS:  ", np.std(self.salt_hr[self.good_salt_mask]))
         print("    NMAD: ", math.nmad(self.salt_hr[self.good_salt_mask]))
         print("    WRMS: ", self.salt_wrms)
-
-    def calculate_salt_hubble_residuals_old(self):
-        """Calculate SALT hubble residuals"""
-        from astropy.cosmology import Planck15
-
-        # For SALT, can only use SNe that are in the good sample
-        self.salt_mask = np.array(
-            [i["idr.subset"] in ["training", "validation"] for i in self.targets]
-        )
-
-        # We also require reasonable redshifts and colors for the determination
-        # of standardization parameters. The redshift_color_mask produced by
-        # the read_between_the_lines algorithm does this.
-        self.good_salt_mask = self.salt_mask & self.redshift_color_mask
-
-        # Determine standardization parameters
-        fit_redshift = self.redshifts[self.good_salt_mask]
-        fit_color = self.salt_color[self.good_salt_mask]
-        fit_x1 = self.salt_x1[self.good_salt_mask]
-
-        all_salt_mb = np.array([i.meta["salt2.RestFrameMag_0_B"] for i in self.targets])
-        fit_salt_mb = all_salt_mb[self.good_salt_mask]
-
-        def calc_salt_hr(x, redshift, salt_mb, x1, color):
-            salt_hr = (
-                salt_mb - Planck15.distmod(redshift).value + x[0] * x1 - x[1] * color
-            )
-            return salt_hr
-
-        def to_min(x):
-            salt_hr = calc_salt_hr(x, fit_redshift, fit_salt_mb, fit_x1, fit_color)
-            return np.std(salt_hr)
-
-        res = minimize(to_min, [0.15, 3.1])
-
-        self.salt_alpha = res.x[0]
-        self.salt_beta = res.x[1]
-        self.salt_hr = calc_salt_hr(
-            res.x, self.redshifts, all_salt_mb, self.salt_x1, self.salt_color
-        )
-
-        # Set median to 0 to remove absolute flux zeropoint
-        self.salt_hr -= np.median(self.salt_hr)
-
-        print("SALT2 Hubble fit: ")
-        print("    alpha:", self.salt_alpha)
-        print("    beta: ", self.salt_beta)
-        print("    std:  ", np.std(self.salt_hr[self.good_salt_mask]))
-        print("    NMAD: ", math.nmad(self.salt_hr[self.good_salt_mask]))
