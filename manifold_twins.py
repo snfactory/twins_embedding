@@ -1383,6 +1383,7 @@ class ManifoldTwinsAnalysis:
         vmin=-0.2,
         vmax=0.2,
         kind="rbtl",
+        cmap=plt.cm.coolwarm,
     ):
         """Plot the GP predictions with data overlayed."""
         use_embedding, use_mags, use_colors, use_pec_vel, use_mask = self.get_mags(kind)
@@ -1426,6 +1427,7 @@ class ManifoldTwinsAnalysis:
             axis_2=axis_2,
             vmin=vmin,
             vmax=vmax,
+            cmap=cmap,
             invert_colorbar=True,
             edgecolors="k",
             marker_size=marker_size,
@@ -1434,7 +1436,7 @@ class ManifoldTwinsAnalysis:
         plt.imshow(
             pred[::-1],
             extent=(min_x, max_x, min_y, max_y),
-            cmap=plt.cm.coolwarm_r,
+            cmap=plt.cm.coolwarm.reversed(),
             vmin=vmin,
             vmax=vmax,
             aspect="auto",
