@@ -13,25 +13,9 @@ import pickle
 import pystan
 import tqdm
 
+from settings import default_settings
+
 from specind import Spectrum
-
-
-idr_directory = "/home/kyle/data/snfactory/idr/"
-
-# default_idr = 'MARBLE'
-# default_idr = 'BERNICE'
-# default_idr = 'CASCAD'
-# default_idr = 'ALLEGv2'
-# default_idr = 'KYLEPSF'
-# default_idr = 'HICKORY'
-default_idr = "BLACKSTON"
-
-cut_supernovae = [
-    # Remove Iax-like supernovae
-    # "LSQ12fhs",
-    # "SN2005cc",
-    # "SN2011ay",
-]
 
 
 class ManifoldTwinsException(Exception):
@@ -153,37 +137,24 @@ def fill_mask(array, mask, fill_value=np.nan):
 
 
 class ManifoldTwinsAnalysis:
-    def __init__(
-        self,
-        idr=default_idr,
-        center_phase=0.0,
-        phase_width=5.0,
-        bin_velocity=1000.0,
-        verbosity=1,
-        cut_supernovae=cut_supernovae,
-        max_count=None,
-    ):
+    def __init__(self, **kwargs):
+
+        # Update the default settings with any arguments that came in from kwargs.
+        self.settings = dict(default_settings, **kwargs)
+
         """Load the dataset"""
         if verbosity >= 1:
             print("Loading dataset...")
-            print("IDR:          %s" % idr)
+            print("IDR:          %s" % self.settings['idr'])
             print(
                 "Phase range: [%.1f, %.1f]"
-                % (center_phase - phase_width, center_phase + phase_width)
+                % (-self.settings['phase_range'], self.settings['phase_range'])
             )
-            print("Center phase: %.1f" % center_phase)
-            print("Bin velocity: %.1f" % bin_velocity)
-            if cut_supernovae:
-                print("Cutting SNe:  %s" % cut_supernovae)
-            if max_count is not None:
-                print("WARNING: Only keeping first %d spectra!" % max_count)
-
-        self.center_phase = center_phase
-        self.phase_width = phase_width
-        self.idr = idr
+            print("Bin velocity: %.1f" % self.settings['bin_velocity'])
 
         self.dataset = Dataset.from_idr(
-            os.path.join(idr_directory, idr), load_both_headers=True
+            os.path.join(self.settings['idr_directory'], self.settings['idr']),
+            load_both_headers=True
         )
 
         # Do/load all of the SALT2 fits for this dataset
@@ -196,7 +167,6 @@ class ManifoldTwinsAnalysis:
 
         self.attrition_enough_spectra = 0
         self.attrition_salt_daymax = 0
-        self.attrition_explicit = 0
         self.attrition_range = 0
         self.attrition_usable = 0
 
@@ -225,29 +195,18 @@ class ManifoldTwinsAnalysis:
             self.attrition_salt_daymax += 1
 
             range_spectra = supernova.get_spectra_in_range(
-                center_phase - phase_width, center_phase + phase_width
+                -self.settings['phase_range'], self.settings['phase_range']
             )
             if len(range_spectra) > 0:
                 self.attrition_range += 1
 
-            if supernova.name in cut_supernovae:
-                print_verbose("Cutting %s, explicit cut!" % supernova, verbosity, 2)
-                # Keep going so that we count the explicit cut at the end.
-                explicit_cut = True
-            else:
-                explicit_cut = False
-
             used_phases = []
             for spectrum in range_spectra:
                 if self._check_spectrum(spectrum, verbosity):
-                    if not explicit_cut:
-                        all_raw_spec.append(spectrum)
+                    all_raw_spec.append(spectrum)
                     used_phases.append(spectrum.phase)
                 else:
                     spectrum.usable = False
-
-                if max_count is not None and len(all_raw_spec) > max_count:
-                    break
 
             used_phases = np.array(used_phases)
             if len(used_phases) > 0:
@@ -255,20 +214,15 @@ class ManifoldTwinsAnalysis:
                 # bin.
                 self.attrition_usable += 1
                 target_center_mask = np.zeros(len(used_phases), dtype=bool)
-                target_center_mask[np.argmin(np.abs(used_phases - center_phase))] = True
-                if not explicit_cut:
-                    self.attrition_explicit += 1
-                    center_mask.extend(target_center_mask)
-
-            if max_count is not None and len(all_raw_spec) > max_count:
-                break
+                target_center_mask[np.argmin(np.abs(used_phases))] = True
+                center_mask.extend(target_center_mask)
 
         all_flux = []
         all_fluxerr = []
         all_spec = []
 
         for spectrum in all_raw_spec:
-            bin_spec = spectrum.bin_by_velocity(bin_velocity)
+            bin_spec = spectrum.bin_by_velocity(self.settings['bin_velocity'])
             all_flux.append(bin_spec.flux)
             all_fluxerr.append(bin_spec.fluxerr)
             all_spec.append(bin_spec)
@@ -413,12 +367,6 @@ class ManifoldTwinsAnalysis:
         num_wave = len(self.wave)
         num_phase_coefficients = 4
 
-        if self.center_phase != 0:
-            raise Exception(
-                "ERROR: Phase interpolation not yet implemented "
-                "for non-zero center phases"
-            )
-
         if num_phase_coefficients % 2 != 0:
             raise Exception("ERROR: Must have an even number of phase " "coefficients.")
 
@@ -431,7 +379,7 @@ class ManifoldTwinsAnalysis:
 
         for i, phase in enumerate(self.salt_phases):
             phase_scale = np.abs(
-                (num_phase_coefficients / 2) * (phase / self.phase_width)
+                (num_phase_coefficients / 2) * (phase / self.settings['phase_range'])
             )
 
             full_bins = int(np.floor(phase_scale))
@@ -524,9 +472,9 @@ class ManifoldTwinsAnalysis:
     def _get_interpolation_path(self, method):
         """Path to use for the results of a stan interpolation fit"""
         return "interpolations/interpolation_%s_%s_%.2f.pkl" % (
-            self.idr,
+            self.settings['idr'],
             method,
-            self.phase_width,
+            self.settings['phase_range'],
         )
 
     def save_interpolation_result(self, method):
