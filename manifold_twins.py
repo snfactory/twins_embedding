@@ -1760,8 +1760,8 @@ class ManifoldTwinsAnalysis:
         x1_err = self.salt_fits['x1_err'].data
         color_err = self.salt_fits['c_err'].data
 
-        cov_mb_x1 = self.salt_fits['covariance'].data[:, 1, 2] * mb_err / x0_err
-        cov_color_mb = self.salt_fits['covariance'].data[:, 1, 3] * mb_err / x0_err
+        cov_mb_x1 = self.salt_fits['covariance'].data[:, 1, 2] * -mb_err / x0_err
+        cov_color_mb = self.salt_fits['covariance'].data[:, 1, 3] * -mb_err / x0_err
         cov_color_x1 = self.salt_fits['covariance'].data[:, 2, 3]
 
         residuals = (
