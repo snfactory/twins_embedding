@@ -9,148 +9,31 @@ import extinction
 import numpy as np
 import os
 import sys
-import pickle
-import pystan
 import tqdm
 
 from settings import default_settings
-
-from specind import Spectrum
+import utils
+import specind
 
 
 class ManifoldTwinsException(Exception):
     pass
 
 
-def print_verbose(message, verbosity, threshold):
-    if verbosity >= threshold:
-        print(message)
-
-
-def compile_stan_model(model_code, cache_dir="./stan_cache", verbose=True):
-    """Compile the given Stan code.
-
-    The compiled model is saved so that it can be reused later without having
-    to recompile every time.
-    """
-    code_hash = md5(model_code.encode("ascii")).hexdigest()
-
-    cache_path = "%s/stan-%s.pkl" % (cache_dir, code_hash)
-
-    os.makedirs(cache_dir, exist_ok=True)
-
-    try:
-        model = pickle.load(open(cache_path, "rb"))
-        if verbose:
-            print("Loaded cached stan model")
-    except FileNotFoundError:
-        print("Compiling stan model")
-        model = pystan.StanModel(model_code=model_code)
-        with open(cache_path, "wb") as cache_file:
-            pickle.dump(model, cache_file)
-        print("Compilation successful")
-
-    return model
-
-
-def load_stan_code(path, *args, **kwargs):
-    """Load Stan code at a given path.
-
-    The compiled model is saved so that it can be reused later without having
-    to recompile every time.
-    """
-    with open(path) as stan_code_file:
-        model_code = stan_code_file.read()
-
-    return compile_stan_model(model_code, *args, **kwargs)
-
-
-def frac_to_mag(fractional_difference):
-    """Convert a fractional difference to a difference in magnitude
-
-    Because this transformation is asymmetric for larger fractional changes, we
-    take the average of positive and negative differences
-    """
-    pos_mag = 2.5 * np.log10(1 + fractional_difference)
-    neg_mag = 2.5 * np.log10(1 - fractional_difference)
-    mag_diff = (pos_mag - neg_mag) / 2.0
-
-    return mag_diff
-
-
-def latex_print(file, text):
-    """Helper for writing out latex automatically.
-
-    This just prints both to a file and to stdout so that we can see what we're doing
-    """
-    print(text)
-    print(text, file=file)
-
-
-def latex_command(file, name, formatstr, val):
-    """Generate a latex command to define a variable."""
-    latex_print(file, "\\newcommand{\\%s}{%s}" % (name, formatstr % val))
-
-
-def latex_std(file, name, val):
-    """Generate a latex command to capture the standard deviation of a parameter"""
-    std, std_err = math.bootstrap_statistic(np.std, val, ddof=1)
-    latex_command(file, name, '%.3f $\\pm$ %.3f', (std, std_err))
-
-
-def latex_nmad(file, name, val):
-    """Generate a latex command to capture the NMAD of a parameter"""
-    nmad, nmad_err = math.bootstrap_statistic(math.nmad, val)
-    latex_command(file, name, '%.3f $\\pm$ %.3f', (nmad, nmad_err))
-
-
-def fill_mask(array, mask, fill_value=np.nan):
-    """Fill in an array with masked out entries.
-
-    Parameters
-    ==========
-    array : numpy.array with shape (N, ...)
-        Array of elements for the masked entries. The first dimension, N,
-        should be equal to the number of unmasked entries.
-    mask : numpy.array of length M.
-        Mask that was applied to select the entries in array. The selected
-        entries should be set to True in mask, and there should be a total of N
-        True values in mask.
-    fill_value : scalar
-        The value to fill with. Default: np.nan
-
-    Returns
-    =======
-    filled_array : numpy.array with shape (M, ...)
-        An array with the entries of the input array for the entries in mask,
-        and fill_value elsewhere. filled_array[mask] will recover the original
-        array.
-    """
-    filled_shape = array.shape
-    filled_shape = (len(mask),) + filled_shape[1:]
-
-    filled_array = np.zeros(filled_shape, dtype=array.dtype)
-    filled_array[mask] = array
-    filled_array[~mask] = fill_value
-
-    return filled_array
-
-
 class ManifoldTwinsAnalysis:
     def __init__(self, **kwargs):
+        """Load the dataset and setup the analysis"""
 
         # Update the default settings with any arguments that came in from kwargs.
         self.settings = dict(default_settings, **kwargs)
 
-        """Load the dataset"""
-        if verbosity >= 1:
-            print("Loading dataset...")
-            print("IDR:          %s" % self.settings['idr'])
-            print(
-                "Phase range: [%.1f, %.1f]"
-                % (-self.settings['phase_range'], self.settings['phase_range'])
-            )
-            print("Bin velocity: %.1f" % self.settings['bin_velocity'])
+        self.print_verbose("Loading dataset...")
+        self.print_verbose("IDR:          %s" % self.settings['idr'])
+        self.print_verbose(
+            "Phase range: [%.1f, %.1f]"
+            % (-self.settings['phase_range'], self.settings['phase_range'])
+        )
+        self.print_verbose("Bin velocity: %.1f" % self.settings['bin_velocity'])
 
         self.dataset = Dataset.from_idr(
             os.path.join(self.settings['idr_directory'], self.settings['idr']),
@@ -163,8 +46,6 @@ class ManifoldTwinsAnalysis:
         all_raw_spec = []
         center_mask = []
 
-        sys.stdout.flush()
-
         self.attrition_enough_spectra = 0
         self.attrition_salt_daymax = 0
         self.attrition_range = 0
@@ -172,10 +53,9 @@ class ManifoldTwinsAnalysis:
 
         for supernova in tqdm.tqdm(self.dataset.targets):
             if len(supernova.spectra) < 5:
-                print_verbose(
+                self.print_verbose(
                     "Cutting %s, not enough spectra to guarantee a "
                     "good LC fit" % supernova,
-                    verbosity,
                     2,
                 )
                 continue
@@ -186,9 +66,8 @@ class ManifoldTwinsAnalysis:
 
             daymax_err = supernova.salt_fit['t0_err']
             if daymax_err > 1.0:
-                print_verbose(
+                self.print_verbose(
                     "Cutting %s, day max err %.2f too high" % (supernova, daymax_err),
-                    verbosity,
                     2,
                 )
                 continue
@@ -202,7 +81,7 @@ class ManifoldTwinsAnalysis:
 
             used_phases = []
             for spectrum in range_spectra:
-                if self._check_spectrum(spectrum, verbosity):
+                if self._check_spectrum(spectrum):
                     all_raw_spec.append(spectrum)
                     used_phases.append(spectrum.phase)
                 else:
@@ -222,7 +101,11 @@ class ManifoldTwinsAnalysis:
         all_spec = []
 
         for spectrum in all_raw_spec:
-            bin_spec = spectrum.bin_by_velocity(self.settings['bin_velocity'])
+            bin_spec = spectrum.bin_by_velocity(
+                self.settings['bin_velocity'],
+                self.settings['bin_min_wavelength'],
+                self.settings['bin_max_wavelength'],
+            )
             all_flux.append(bin_spec.flux)
             all_fluxerr.append(bin_spec.fluxerr)
             all_spec.append(bin_spec)
@@ -239,6 +122,7 @@ class ManifoldTwinsAnalysis:
         self.center_mask = np.array(center_mask)
 
         # Pull out variables that we use all the time.
+        self.helio_redshifts = self.read_meta("host.zhelio")
         self.redshifts = self.read_meta("host.zcmb")
         self.redshift_errs = self.read_meta("host.zhelio.err")
 
@@ -251,7 +135,7 @@ class ManifoldTwinsAnalysis:
         # Pull out SALT fit info
         self.salt_fits = Table([i.salt_fit for i in self.targets])
         self.salt_x1 = self.salt_fits['x1'].data
-        self.salt_color = self.salt_fits['c'].data
+        self.salt_colors = self.salt_fits['c'].data
         self.salt_phases = np.array([i.phase for i in self.spectra])
 
         # Record which targets should be in the validation set.
@@ -259,22 +143,38 @@ class ManifoldTwinsAnalysis:
             [i["idr.subset"] != "validation" for i in self.targets]
         )
 
-    def _check_spectrum(self, spectrum, verbosity=1):
+        # Build a hash that is unique to the dataset that we are working on.
+        hash_info = (
+            self.settings['idr']
+            + ';' + str(self.settings['phase_range'])
+            + ';' + str(self.settings['bin_velocity'])
+            + ';' + str(self.settings['bin_min_wavelength'])
+            + ';' + str(self.settings['bin_max_wavelength'])
+            + ';' + str(self.settings['s2n_cut_min_wavelength'])
+            + ';' + str(self.settings['s2n_cut_max_wavelength'])
+            + ';' + str(self.settings['s2n_cut_threshold'])
+        )
+        self.dataset_hash = md5(hash_info.encode("ascii")).hexdigest()
+
+
+    def _check_spectrum(self, spectrum):
         """Check if a spectrum is valid or not"""
         spectrum.do_lazyload()
 
-        s2n_start = spectrum.get_signal_to_noise(3300, 3800)
+        s2n_start = spectrum.get_signal_to_noise(
+            self.settings['s2n_cut_min_wavelength'],
+            self.settings['s2n_cut_max_wavelength'],
+        )
 
-        if s2n_start < 100:
-            # Signal-to-noise cut. We find that a signal-to-noise of
-            # < ~100 in the U-band leads to an added core dispersion of
-            # >0.1 mag in the U-band. This is unacceptable for the
-            # twins analysis that relies on getting the color right for
-            # a single spectrum.
-            print_verbose(
+        if s2n_start < self.settings['s2n_cut_threshold']:
+            # Signal-to-noise cut. We find that a signal-to-noise of < ~100 in the
+            # U-band leads to an added core dispersion of >0.1 mag in the U-band which
+            # is much higher than expected from statistics. This is unacceptable for the
+            # twins analysis that relies on getting the color right for a single
+            # spectrum.
+            self.print_verbose(
                 "Cutting %s, start signal-to-noise %.2f "
                 "too low." % (spectrum, s2n_start),
-                verbosity,
                 2,
             )
             return False
@@ -318,46 +218,49 @@ class ManifoldTwinsAnalysis:
 
         return res
 
-    def model_maximum_spectra(self, use_cache=True, use_cached_model_uncertainty=False):
-        """Run the phase interpolation algorithm to model spectra near maximum
-        light.
+    def print_verbose(self, message, minimum_verbosity=1):
+        if self.settings['verbosity'] >= minimum_verbosity:
+            print(message)
 
-        This algorithm uses all targets with multiple spectra to model how Type
-        Ia supernovae evolve near maximum light. This method does not rely on
+    def model_maximum_spectra(self, use_cache=True):
+        """Estimate the spectra for each of our SNe Ia at maximum light.
+
+        This algorithm uses all targets with multiple spectra to model the differential
+        evolution of Type Ia supernovae near maximum light. This method does not rely on
         knowing the underlying model of Type Ia supernovae and only models the
-        differences. The model is generated in magnitude space, so anything
-        static in between us and the supernova, like dust, does not affect the
-        model.
+        differences. The model is generated in magnitude space, so anything static in
+        between us and the supernova, like dust, does not affect the model.
 
         The fit is performed using Stan. We only use Stan as a minimizer here,
-        and we do some analytic calculations inside to make the computation
-        more robust that are not applicable for a proper Bayesian analysis!
+        and we do some analytic tricks inside to speed up the computation. Don't try to
+        run this in sampling model, the analytic tricks will mess up the uncertainties
+        of a Bayesian analysis!
 
         If use_cache is True, then the fitted model will be retrieved from a
         cache if it exists. Make sure to run with use_cache=False if making
         modifications to the model!
-
-        If use_cached_model_uncertainty is True, then only the model
-        uncertainty is used from the cached model. The model uncertainty is
-        fairly stable across runs, but take a long time to fit properly.
-        Setting use_cached_model_uncertainty to True overrides the value of
-        use_cache.
         """
-        # Try to load a cached output of this function if we can.
-        if use_cache or use_cached_model_uncertainty:
-            cache_result = self.load_interpolation_result("analytic")
-            if cache_result is None:
-                # No cache available, skip.
-                pass
-            elif use_cached_model_uncertainty:
-                # Keep the model uncertainty from the previous run, but
-                # recalculate everything else.
-                print("Using cached model uncertainty, but refitting rest of " "model")
-                phase_dispersion_coefficients = cache_result[
-                    "phase_dispersion_coefficients"
-                ]
-            elif use_cache:
-                self.interpolation_result = cache_result
+        # Load the stan model
+        model_path = "./stan_models/phase_interpolation_analytic.stan"
+        model_hash, model = utils.load_stan_model(
+            model_path,
+            verbosity=self.settings['verbosity']
+        )
+
+        # Build a hash that is unique to this dataset/analysis
+        hash_info = (
+            self.dataset_hash
+            + ';' + model_hash
+            + ';' + str(self.settings['maximum_num_phase_coefficients'])
+        )
+        self.maximum_hash = md5(hash_info.encode("ascii")).hexdigest()
+
+        # If we ran this model before, read the cached result if we can.
+        if use_cache:
+            cache_result = utils.load_stan_result(self.maximum_hash)
+            if cache_result is not None:
+                # Found the cached result. Load it and don't redo the fit.
+                self.maximum_result = cache_result
                 self.maximum_flux = cache_result["maximum_flux"]
                 self.maximum_fluxerr = cache_result["maximum_fluxerr"]
                 return
@@ -365,7 +268,7 @@ class ManifoldTwinsAnalysis:
         num_targets = len(self.targets)
         num_spectra = len(self.flux)
         num_wave = len(self.wave)
-        num_phase_coefficients = 4
+        num_phase_coefficients = self.settings['maximum_num_phase_coefficients']
 
         if num_phase_coefficients % 2 != 0:
             raise Exception("ERROR: Must have an even number of phase " "coefficients.")
@@ -411,11 +314,6 @@ class ManifoldTwinsAnalysis:
                 "gray_dispersion_scale": 0.02,
             }
 
-            if not use_cached_model_uncertainty:
-                init_params["phase_dispersion_coefficients"] = 0.01 * np.ones(
-                    (num_phase_coefficients, num_wave)
-                )
-
             return init_params
 
         stan_data = {
@@ -431,95 +329,57 @@ class ManifoldTwinsAnalysis:
             "target_map": self.target_map + 1,  # stan uses 1-based indexing
             "maximum_map": np.where(self.center_mask)[0] + 1,
             "salt_x1": self.salt_x1,
-            # 'log_wavelength': np.log(self.wave),
         }
 
-        if use_cached_model_uncertainty:
-            stan_data["phase_dispersion_coefficients"] = phase_dispersion_coefficients
-            model_code = (
-                "./stan_models/phase_interpolation_analytic_fixed_"
-                "model_uncertainty.stan"
-            )
-        else:
-            model_code = "./stan_models/phase_interpolation_analytic.stan"
-
-        self.stan_init = stan_init
-        self.stan_data = stan_data
-
-        model = load_stan_code(model_code)
         sys.stdout.flush()
-        res = model.optimizing(
+        result = model.optimizing(
             data=stan_data, init=stan_init, verbose=True, iter=20000, history_size=100
         )
 
-        # For the analytic model, sampling doesn't work because we are
-        # analytically calculating the MLE mean spectrum for each target.
-        # res = model.sampling(data=stan_data, init=stan_init, verbose=True)
+        self.maximum_result = result
+        self.maximum_flux = result["maximum_flux"]
+        self.maximum_fluxerr = result["maximum_fluxerr"]
 
-        # self.stan_model = model
-        self.interpolation_result = res
-        self.maximum_flux = self.interpolation_result["maximum_flux"]
-        self.maximum_fluxerr = self.interpolation_result["maximum_fluxerr"]
+        # Save the output to cache it for future runs.
+        utils.save_stan_result(self.maximum_hash, result)
 
-        if use_cached_model_uncertainty:
-            self.interpolation_result[
-                "phase_dispersion_coefficients"
-            ] = phase_dispersion_coefficients
-
-        # Save the output to cache
-        cache_result = self.save_interpolation_result("analytic")
-
-    def _get_interpolation_path(self, method):
-        """Path to use for the results of a stan interpolation fit"""
-        return "interpolations/interpolation_%s_%s_%.2f.pkl" % (
-            self.settings['idr'],
-            method,
-            self.settings['phase_range'],
-        )
-
-    def save_interpolation_result(self, method):
-        """Save a previously run interpolation to a pickle file"""
-        path = self._get_interpolation_path(method)
-
-        with open(path, "wb") as outfile:
-            pickle.dump(self.interpolation_result, outfile)
-
-    def load_interpolation_result(self, method):
-        """Load a previously run interpolation"""
-        path = self._get_interpolation_path(method)
-
-        try:
-            with open(path, "rb") as infile:
-                print("Using saved interpolation result")
-                return pickle.load(infile)
-        except IOError:
-            pass
-
-        # No save result
-        return None
-
-    def read_between_the_lines(
-        self, mask=None, mask_power_fraction=0.1, blinded=True, fiducial_rv=2.8
-    ):
+    def read_between_the_lines(self, use_cache=True):
         """Run the read between the lines algorithm.
 
         This algorithm estimates the brightnesses and colors of every spectrum
         and produces dereddened spectra.
 
-        If blinded is True, then the brightnesses of any validation supernovae
-        are thrown out.
-
         The fit is performed using Stan. We only use Stan as a minimizer here.
         """
-        color_law = extinction.fitzpatrick99(self.wave, 1.0, fiducial_rv)
-        self.fiducial_rv = fiducial_rv
+        # Load the fiducial color law.
+        self.rbtl_color_law = extinction.fitzpatrick99(
+            self.wave, 1.0, self.settings['rbtl_fiducial_rv']
+        )
 
-        if mask is None:
-            mask = np.ones(len(self.targets), dtype=bool)
+        # Load the stan model
+        model_path = "./stan_models/read_between_the_lines.stan"
+        model_hash, model = utils.load_stan_model(
+            model_path,
+            verbosity=self.settings['verbosity']
+        )
 
-        use_targets = self.targets[mask]
-        use_maximum_flux = self.maximum_flux[mask]
-        use_maximum_fluxerr = self.maximum_fluxerr[mask]
+        # Build a hash that is unique to this dataset/analysis
+        hash_info = (
+            self.maximum_hash
+            + ';' + model_hash
+            + ';' + str(self.settings['rbtl_fiducial_rv'])
+        )
+        self.rbtl_hash = md5(hash_info.encode("ascii")).hexdigest()
+
+        # If we ran this model before, read the cached result if we can.
+        if use_cache:
+            cache_result = utils.load_stan_result(self.rbtl_hash)
+            if cache_result is not None:
+                # Found the cached result. Load it and don't redo the fit.
+                self._parse_rbtl_result(cache_result)
+                return
+
+        use_targets = self.targets
 
         num_targets = len(use_targets)
         num_wave = len(self.wave)
@@ -527,7 +387,7 @@ class ManifoldTwinsAnalysis:
         def stan_init():
             # Use the spectrum closest to maximum as a first guess of the
             # target's spectrum.
-            start_mean_flux = np.mean(use_maximum_flux, axis=0)
+            start_mean_flux = np.mean(self.maximum_flux, axis=0)
             start_fractional_dispersion = 0.1 * np.ones(num_wave)
 
             return {
@@ -540,87 +400,96 @@ class ManifoldTwinsAnalysis:
         stan_data = {
             "num_targets": num_targets,
             "num_wave": num_wave,
-            "maximum_flux": use_maximum_flux,
-            "maximum_fluxerr": use_maximum_fluxerr,
-            "color_law": color_law,
+            "maximum_flux": self.maximum_flux,
+            "maximum_fluxerr": self.maximum_fluxerr,
+            "color_law": self.rbtl_color_law,
         }
 
-        model = load_stan_code("./stan_models/rbtl.stan")
         sys.stdout.flush()
-        res = model.optimizing(data=stan_data, init=stan_init, verbose=True, iter=5000)
+        result = model.optimizing(data=stan_data, init=stan_init, verbose=True,
+                                  iter=5000)
 
-        self.rbtl_result = res
+        # Save the output to cache it for future runs.
+        utils.save_stan_result(self.rbtl_hash, result)
 
-        self.colors = fill_mask(res["colors"], mask)
+        # Parse the result
+        self._parse_rbtl_result(result)
 
-        self.model_flux = fill_mask(res["model_flux"], mask)
-        self.model_fluxerr = fill_mask(res["model_fluxerr"], mask)
+    def _parse_rbtl_result(self, result):
+        """Parse and save the result of a run of the RBTL analysis"""
+        self.rbtl_result = result
 
-        self.mean_flux = res["mean_flux"]
+        self.rbtl_colors = result["colors"]
+        self.rbtl_mags = result["magnitudes"]
+        self.mean_flux = result["mean_flux"]
 
-        self.mags = fill_mask(res["magnitudes"], mask)
-
-        if blinded:
+        if self.settings['blinded']:
             # Immediately discard validation magnitudes so that we can't
             # accidentally look at them.
-            self.mags[~self.train_mask] = np.nan
-
-        self.model_scales = fill_mask(res["model_scales"], mask)
+            self.rbtl_mags[~self.train_mask] = np.nan
 
         # Deredden the real spectra and set them to the same scale as the mean
         # spectrum.
-        self.scale_flux = fill_mask(use_maximum_flux / res["model_scales"], mask)
-        self.scale_fluxerr = fill_mask(use_maximum_fluxerr / res["model_scales"], mask)
+        self.scale_flux = self.maximum_flux / result['model_scales']
+        self.scale_fluxerr = self.maximum_fluxerr / result['model_scales']
 
-        # Mask to select targets that have a measured magnitude
-        self.mag_mask = ~np.isnan(self.mags)
-
-        # Generate a mask that indicates which targets can be used for further
-        # analysis. We start with the input mask, and reject any additional
-        # targets whose interpolation uncertainty is large compared to the
-        # intrinsic supernova dispersion.
-        intrinsic_dispersion = frac_to_mag(res["fractional_dispersion"])
-        intrinsic_power = np.sum(intrinsic_dispersion ** 2)
-        interpolation_uncertainty = frac_to_mag(
+    def build_masks(self):
+        """Build masks that are used in the various manifold learning and magnitude
+        analyses
+        """
+        # For the manifold learning analysis, we need to make sure that the spectra at
+        # maximum light have reasonable uncertainties on their spectra at maximum light.
+        # We define "reasonable" by comparing the variance of each spectrum to the
+        # size of the intrinsic supernova variation measured in the RBTL analysis.
+        intrinsic_dispersion = utils.frac_to_mag(
+            self.rbtl_result["fractional_dispersion"]
+        )
+        intrinsic_power = np.sum(intrinsic_dispersion**2)
+        maximum_uncertainty = utils.frac_to_mag(
             self.maximum_fluxerr / self.maximum_flux
         )
-        interp_power = np.sum(interpolation_uncertainty ** 2, axis=1)
-        self.interp_power_fraction = interp_power / intrinsic_power
-        self.interp_mask = mask & (self.interp_power_fraction < mask_power_fraction)
-        print(
+        maximum_power = np.sum(maximum_uncertainty**2, axis=1)
+        self.maximum_uncertainty_fraction = maximum_power / intrinsic_power
+        self.uncertainty_mask = (
+            self.maximum_uncertainty_fraction <
+            self.settings['mask_uncertainty_fraction']
+        )
+        self.print_verbose(
             "Masking %d/%d targets whose interpolation uncertainty power is "
             "more than %.3f of the intrinsic power."
-            % (np.sum(~self.interp_mask), len(self.interp_mask), mask_power_fraction)
+            % (np.sum(~self.uncertainty_mask), len(self.uncertainty_mask),
+               self.settings['mask_uncertainty_fraction'])
         )
 
-        # Mask to select targets that have a magnitude that is expected to have
-        # a reasonable dispersion in brightness.
+        # Mask to select targets that have a magnitude that is expected to have a large
+        # dispersion in brightness.
         with np.errstate(invalid="ignore"):
             self.redshift_color_mask = (
                 (self.redshift_errs < 0.004)
-                & (self.redshifts > 0.02)
-                & (self.colors - np.nanmedian(self.colors) < 0.5)
+                & (self.helio_redshifts > 0.02)
+                & (self.rbtl_colors - np.median(self.rbtl_colors) < 0.5)
             )
 
-            self.good_mag_mask = (
-                self.mag_mask & self.interp_mask & self.redshift_color_mask
-            )
+    def generate_embedding(self):
+        """Generate the manifold learning embedding."""
+        self.isomap = Isomap(
+            n_neighbors=self.settings['isomap_num_neighbors'],
+            n_components=self.settings['isomap_num_components']
+        )
 
-    def do_embedding(self, n_neighbors=10, n_components=3):
-        self.iso = Isomap(n_neighbors=n_neighbors, n_components=n_components)
+        mask = self.uncertainty_mask
+        self.isomap_diffs = self.scale_flux / self.mean_flux - 1
 
-        mask = self.interp_mask
-        # self.iso_diffs = -2.5*np.log10(self.scale_flux / self.mean_flux)
-        self.iso_diffs = self.scale_flux / self.mean_flux - 1
+        self.embedding = utils.fill_mask(
+            self.isomap.fit_transform(self.isomap_diffs[mask]), mask
+        )
 
-        self.embedding = fill_mask(self.iso.fit_transform(self.iso_diffs[mask]), mask)
-
-    def get_indicators(self):
+    def calculate_spectral_indicators(self):
         """Calculate spectral indicators for all of the features"""
         all_indicators = []
 
         for idx in range(len(self.scale_flux)):
-            spec = Spectrum(
+            spec = specind.Spectrum(
                 self.wave, self.scale_flux[idx], self.scale_fluxerr[idx] ** 2
             )
             indicators = spec.get_spin_dict()
@@ -628,329 +497,7 @@ class ManifoldTwinsAnalysis:
 
         all_indicators = Table(all_indicators)
 
-        return all_indicators
-
-    def do_component_blondin_plot(self, axis_1=0, axis_2=1, marker_size=40):
-        indicators = self.get_indicators()
-
-        s1 = indicators["EWSiII6355"]
-        s2 = indicators["EWSiII5972"]
-
-        plt.figure()
-
-        cut = s2 > 30
-        plt.scatter(
-            self.embedding[cut, axis_1],
-            self.embedding[cut, axis_2],
-            s=marker_size,
-            c="r",
-            label="Cool (CL)",
-        )
-        cut = (s2 < 30) & (s1 < 70)
-        plt.scatter(
-            self.embedding[cut, axis_1],
-            self.embedding[cut, axis_2],
-            s=marker_size,
-            c="g",
-            label="Shallow silicon (SS)",
-        )
-        cut = (s2 < 30) & (s1 > 70) & (s1 < 100)
-        plt.scatter(
-            self.embedding[cut, axis_1],
-            self.embedding[cut, axis_2],
-            s=marker_size,
-            c="black",
-            label="Core normal (CN)",
-        )
-        cut = (s2 < 30) & (s1 > 100)
-        plt.scatter(
-            self.embedding[cut, axis_1],
-            self.embedding[cut, axis_2],
-            s=marker_size,
-            c="b",
-            label="Broad line (BL)",
-        )
-
-        plt.xlabel("Component %d" % (axis_1 + 1))
-        plt.ylabel("Component %d" % (axis_2 + 1))
-
-        plt.legend()
-
-    def do_blondin_plot(self, marker_size=40):
-        indicators = self.get_indicators()
-
-        s1 = indicators["EWSiII6355"]
-        s2 = indicators["EWSiII5972"]
-
-        plt.figure()
-
-        cut = s2 > 30
-        plt.scatter(s1[cut], s2[cut], s=marker_size, c="r", label="Cool (CL)")
-        cut = (s2 < 30) & (s1 < 70)
-        plt.scatter(
-            s1[cut], s2[cut], s=marker_size, c="g", label="Shallow silicon (SS)"
-        )
-        cut = (s2 < 30) & (s1 > 70) & (s1 < 100)
-        plt.scatter(
-            s1[cut], s2[cut], s=marker_size, c="black", label="Core normal (CN)"
-        )
-        cut = (s2 < 30) & (s1 > 100)
-        plt.scatter(s1[cut], s2[cut], s=marker_size, c="b", label="Broad line (BL)")
-
-        plt.xlabel("SiII 6355 Equivalent Width")
-        plt.ylabel("SiII 5972 Equivalent Width")
-
-        plt.legend()
-
-    def do_blondin_plot_3d(self, marker_size=40):
-        fig = plt.figure()
-        ax = fig.add_subplot(111, projection=Axes3D.name)
-
-        indicators = self.get_indicators()
-
-        s1 = indicators["EWSiII6355"]
-        s2 = indicators["EWSiII5972"]
-
-        embedding = self.embedding
-
-        cut = s2 > 30
-        ax.scatter(
-            embedding[cut, 0],
-            embedding[cut, 1],
-            embedding[cut, 2],
-            s=marker_size,
-            c="r",
-            label="Cool (CL)",
-        )
-        cut = (s2 < 30) & (s1 < 70)
-        ax.scatter(
-            embedding[cut, 0],
-            embedding[cut, 1],
-            embedding[cut, 2],
-            s=marker_size,
-            c="g",
-            label="Shallow silicon (SS)",
-        )
-        cut = (s2 < 30) & (s1 > 70) & (s1 < 100)
-        ax.scatter(
-            embedding[cut, 0],
-            embedding[cut, 1],
-            embedding[cut, 2],
-            s=marker_size,
-            c="black",
-            label="Core normal (CN)",
-        )
-        cut = (s2 < 30) & (s1 > 100)
-        ax.scatter(
-            embedding[cut, 0],
-            embedding[cut, 1],
-            embedding[cut, 2],
-            s=marker_size,
-            c="b",
-            label="Broad line (BL)",
-        )
-
-        ax.set_xlabel("Component 0")
-        ax.set_ylabel("Component 1")
-        ax.set_zlabel("Component 2")
-
-        ax.legend()
-
-    def scatter(
-        self,
-        variable,
-        mask=None,
-        weak_mask=None,
-        label="",
-        axis_1=0,
-        axis_2=1,
-        axis_3=None,
-        marker_size=40,
-        cmap=plt.cm.coolwarm,
-        invert_colorbar=False,
-        **kwargs
-    ):
-        """Make a scatter plot of some variable against the Isomap coefficients
-
-        variable is the values to use for the color axis of the plot.
-
-        A boolean array can be specified for cut to specify which points to use in the
-        plot. If cut is None, then the full variable list is used.
-
-        The target variable can be passed with or without the cut already applied. This
-        function will check and automatically apply it or ignore it so that the variable
-        array has the same length as the coefficient arrays.
-
-        Optionally, a weak cut can be performed where spectra not passing the cut are
-        plotted as small points rather than being completely omitted. To do this,
-        specify the "weak_cut" parameter with a boolean array that has the length of the
-        the variable array after the base cut.
-
-        Any kwargs are passed to plt.scatter directly.
-        """
-        use_embedding = self.embedding
-        use_var = variable
-
-        if mask is not None:
-            use_embedding = use_embedding[mask]
-            use_var = use_var[mask]
-
-        if invert_colorbar:
-            cmap = cmap.reversed()
-
-        if weak_mask is None:
-            # Constant marker size
-            marker_size = marker_size
-        else:
-            # Variable marker size
-            marker_size = 10 + (marker_size - 10) * weak_mask[mask]
-
-        fig = plt.figure()
-
-        if use_embedding.shape[1] >= 3 and axis_3 is not None:
-            ax = fig.add_subplot(111, projection="3d")
-            plot = ax.scatter(
-                use_embedding[:, axis_1],
-                use_embedding[:, axis_2],
-                use_embedding[:, axis_3],
-                s=marker_size,
-                c=use_var,
-                cmap=cmap,
-                **kwargs
-            )
-            ax.set_zlabel("Component %d" % axis_3)
-        else:
-            ax = fig.add_subplot(111)
-            plot = ax.scatter(
-                use_embedding[:, axis_1],
-                use_embedding[:, axis_2],
-                s=marker_size,
-                c=use_var,
-                cmap=cmap,
-                **kwargs
-            )
-
-        ax.set_xlabel("Component %d" % (axis_1 + 1))
-        ax.set_ylabel("Component %d" % (axis_2 + 1))
-
-        if label is not None:
-            cb = fig.colorbar(plot, label=label)
-        else:
-            cb = fig.colorbar(plot)
-
-        if invert_colorbar:
-            # workaround: in my version of matplotlib, the ticks disappear if
-            # you invert the colorbar y-axis. Save the ticks, and put them back
-            # to work around that bug.
-            ticks = cb.get_ticks()
-            cb.ax.invert_yaxis()
-            cb.set_ticks(ticks)
-
-        plt.tight_layout()
-
-    def _evaluate_polynomial(self, coordinates, coefficients, degree):
-        """Evaluate a polynomial
-
-        Parameters
-        ==========
-        coordinates : numpy.array
-            Coordinates to evaluate the polynomial at. This should have the shape
-            (num_points, num_dimensions). Where num_points is the number of different
-            sets of coordinates to evaluate the polynomial at, and num_dimensions is the
-            number of dimensions for each point.
-        coefficients : numpy.array
-            A list of N coefficients for the polynomial. The length of this depends on
-            the degree and dimension.
-        degree : int
-            The degree of the polynomial. Only degrees of 0, 1 or 2 are supported.
-        """
-        dimension = coordinates.shape[-1]
-
-        remaining_coefficients = coefficients
-
-        # Degree 0
-        model = coefficients[0]
-        remaining_coefficients = coefficients[1:]
-
-        # Degree 1
-        if degree >= 1:
-            num_coef = dimension
-            linear_coef = remaining_coefficients[:num_coef]
-            remaining_coefficients = remaining_coefficients[num_coef:]
-
-            for dim in range(dimension):
-                model += linear_coef[dim] * coordinates[:, dim]
-
-        # Degree 2
-        if degree >= 2:
-            num_coef = dimension * (dimension + 1) // 2
-            quad_coef = remaining_coefficients[:num_coef]
-            remaining_coefficients = remaining_coefficients[num_coef:]
-
-            coef_idx = 0
-            for dim1 in range(dimension):
-                for dim2 in range(dim1, dimension):
-                    model += (
-                        quad_coef[coef_idx]
-                        * coordinates[:, dim1]
-                        * coordinates[:, dim2]
-                    )
-                    coef_idx += 1
-
-        return model
-
-    def apply_polynomial_standardization(self, degree=1, kind="rbtl"):
-        """Apply polynomial standardization to the dataset.
-
-        The degree can be up to 2.
-
-        All of the isomap coordinates are used along with color.
-        """
-        if degree not in [0, 1, 2]:
-            message = "Degree %d not supported for polynomial standardization!" % degree
-            raise ManifoldTwinsException(message)
-
-        good_embedding, good_mags, good_colors, good_pec_vel, good_mask = self.get_mags(
-            kind
-        )
-        full_embedding, full_mags, full_colors, full_pec_vel, full_mask = self.get_mags(
-            kind, full=True
-        )
-
-        # Figure out how many parameters we need for the fit.
-        dimension = good_embedding.shape[-1] + 1
-        num_parameters = 1
-        if degree >= 1:
-            num_parameters += dimension
-        if degree >= 2:
-            num_parameters += (dimension ** 2 + dimension) // 2
-
-        def apply_corr(coefficients, embedding, mags, colors):
-            stack_x = np.concatenate((colors[:, None], embedding), axis=1)
-
-            model = self._evaluate_polynomial(stack_x, coefficients, degree)
-
-            diff = mags - model
-
-            return diff
-
-        def to_min(x):
-            corr_residuals = apply_corr(x, good_embedding, good_mags, good_colors)
-            result = np.sum(corr_residuals ** 2)
-            return result
-
-        res = minimize(to_min, np.zeros(num_parameters))
-        print("Fitted coefficients:")
-        print(res.x)
-
-        self.corr_mags = fill_mask(
-            apply_corr(res.x, full_embedding, full_mags, full_colors), full_mask
-        )
-
-        good_corr_mags = self.corr_mags[good_mask]
-
-        print("Fit NMAD:       ", math.nmad(good_corr_mags))
-        print("Fit std:        ", np.std(good_corr_mags))
+        self.spectral_indicators = all_indicators
 
     def _build_gp(self, x, yerr, hyperparameters=None, phase=False):
         """Build a george Gaussian Process object and kernels.
@@ -1130,8 +677,8 @@ class ManifoldTwinsAnalysis:
 
     def get_mags(self, kind="rbtl", full=False, peculiar_velocity=300):
         if kind == "rbtl":
-            mags = self.mags
-            colors = self.colors
+            mags = self.rbtl_mags
+            colors = self.rbtl_colors
             if full:
                 mask = self.mag_mask & self.interp_mask
             else:
@@ -1141,7 +688,7 @@ class ManifoldTwinsAnalysis:
                 mags = self.salt_hr
             elif kind == "salt_raw":
                 mags = self.salt_hr_raw
-            colors = self.salt_color
+            colors = self.salt_colors
             if full:
                 mask = self.salt_mask & self.interp_mask
             else:
@@ -1637,7 +1184,7 @@ class ManifoldTwinsAnalysis:
             mask = self.good_mag_mask
 
         use_spec = self.iso_diffs[mask]
-        use_mag = self.mags[mask]
+        use_mag = self.rbtl_mags[mask]
 
         use_mag -= np.mean(use_mag)
 
@@ -1716,7 +1263,7 @@ class ManifoldTwinsAnalysis:
             mb
             - MB
             + alpha * self.salt_x1
-            - beta * self.salt_color
+            - beta * self.salt_colors
         )
 
         residual_uncertainties = np.sqrt(
@@ -1837,3 +1384,223 @@ class ManifoldTwinsAnalysis:
         print("    RMS:  ", np.std(self.salt_hr[self.good_salt_mask]))
         print("    NMAD: ", math.nmad(self.salt_hr[self.good_salt_mask]))
         print("    WRMS: ", self.salt_wrms)
+
+    def scatter(
+        self,
+        variable,
+        mask=None,
+        weak_mask=None,
+        label="",
+        axis_1=0,
+        axis_2=1,
+        axis_3=None,
+        marker_size=40,
+        cmap=plt.cm.coolwarm,
+        invert_colorbar=False,
+        **kwargs
+    ):
+        """Make a scatter plot of some variable against the Isomap coefficients
+
+        variable is the values to use for the color axis of the plot.
+
+        A boolean array can be specified for cut to specify which points to use in the
+        plot. If cut is None, then the full variable list is used.
+
+        The target variable can be passed with or without the cut already applied. This
+        function will check and automatically apply it or ignore it so that the variable
+        array has the same length as the coefficient arrays.
+
+        Optionally, a weak cut can be performed where spectra not passing the cut are
+        plotted as small points rather than being completely omitted. To do this,
+        specify the "weak_cut" parameter with a boolean array that has the length of the
+        the variable array after the base cut.
+
+        Any kwargs are passed to plt.scatter directly.
+        """
+        use_embedding = self.embedding
+        use_var = variable
+
+        if mask is not None:
+            use_embedding = use_embedding[mask]
+            use_var = use_var[mask]
+
+        if invert_colorbar:
+            cmap = cmap.reversed()
+
+        if weak_mask is None:
+            # Constant marker size
+            marker_size = marker_size
+        else:
+            # Variable marker size
+            marker_size = 10 + (marker_size - 10) * weak_mask[mask]
+
+        fig = plt.figure()
+
+        if use_embedding.shape[1] >= 3 and axis_3 is not None:
+            ax = fig.add_subplot(111, projection="3d")
+            plot = ax.scatter(
+                use_embedding[:, axis_1],
+                use_embedding[:, axis_2],
+                use_embedding[:, axis_3],
+                s=marker_size,
+                c=use_var,
+                cmap=cmap,
+                **kwargs
+            )
+            ax.set_zlabel("Component %d" % axis_3)
+        else:
+            ax = fig.add_subplot(111)
+            plot = ax.scatter(
+                use_embedding[:, axis_1],
+                use_embedding[:, axis_2],
+                s=marker_size,
+                c=use_var,
+                cmap=cmap,
+                **kwargs
+            )
+
+        ax.set_xlabel("Component %d" % (axis_1 + 1))
+        ax.set_ylabel("Component %d" % (axis_2 + 1))
+
+        if label is not None:
+            cb = fig.colorbar(plot, label=label)
+        else:
+            cb = fig.colorbar(plot)
+
+        if invert_colorbar:
+            # workaround: in my version of matplotlib, the ticks disappear if
+            # you invert the colorbar y-axis. Save the ticks, and put them back
+            # to work around that bug.
+            ticks = cb.get_ticks()
+            cb.ax.invert_yaxis()
+            cb.set_ticks(ticks)
+
+        plt.tight_layout()
+
+
+    def do_component_blondin_plot(self, axis_1=0, axis_2=1, marker_size=40):
+        indicators = self.spectral_indicators
+
+        s1 = indicators["EWSiII6355"]
+        s2 = indicators["EWSiII5972"]
+
+        plt.figure()
+
+        cut = s2 > 30
+        plt.scatter(
+            self.embedding[cut, axis_1],
+            self.embedding[cut, axis_2],
+            s=marker_size,
+            c="r",
+            label="Cool (CL)",
+        )
+        cut = (s2 < 30) & (s1 < 70)
+        plt.scatter(
+            self.embedding[cut, axis_1],
+            self.embedding[cut, axis_2],
+            s=marker_size,
+            c="g",
+            label="Shallow silicon (SS)",
+        )
+        cut = (s2 < 30) & (s1 > 70) & (s1 < 100)
+        plt.scatter(
+            self.embedding[cut, axis_1],
+            self.embedding[cut, axis_2],
+            s=marker_size,
+            c="black",
+            label="Core normal (CN)",
+        )
+        cut = (s2 < 30) & (s1 > 100)
+        plt.scatter(
+            self.embedding[cut, axis_1],
+            self.embedding[cut, axis_2],
+            s=marker_size,
+            c="b",
+            label="Broad line (BL)",
+        )
+
+        plt.xlabel("Component %d" % (axis_1 + 1))
+        plt.ylabel("Component %d" % (axis_2 + 1))
+
+        plt.legend()
+
+    def do_blondin_plot(self, marker_size=40):
+        indicators = self.spectral_indicators
+
+        s1 = indicators["EWSiII6355"]
+        s2 = indicators["EWSiII5972"]
+
+        plt.figure()
+
+        cut = s2 > 30
+        plt.scatter(s1[cut], s2[cut], s=marker_size, c="r", label="Cool (CL)")
+        cut = (s2 < 30) & (s1 < 70)
+        plt.scatter(
+            s1[cut], s2[cut], s=marker_size, c="g", label="Shallow silicon (SS)"
+        )
+        cut = (s2 < 30) & (s1 > 70) & (s1 < 100)
+        plt.scatter(
+            s1[cut], s2[cut], s=marker_size, c="black", label="Core normal (CN)"
+        )
+        cut = (s2 < 30) & (s1 > 100)
+        plt.scatter(s1[cut], s2[cut], s=marker_size, c="b", label="Broad line (BL)")
+
+        plt.xlabel("SiII 6355 Equivalent Width")
+        plt.ylabel("SiII 5972 Equivalent Width")
+
+        plt.legend()
+
+    def do_blondin_plot_3d(self, marker_size=40):
+        fig = plt.figure()
+        ax = fig.add_subplot(111, projection=Axes3D.name)
+
+        indicators = self.spectral_indicators
+
+        s1 = indicators["EWSiII6355"]
+        s2 = indicators["EWSiII5972"]
+
+        embedding = self.embedding
+
+        cut = s2 > 30
+        ax.scatter(
+            embedding[cut, 0],
+            embedding[cut, 1],
+            embedding[cut, 2],
+            s=marker_size,
+            c="r",
+            label="Cool (CL)",
+        )
+        cut = (s2 < 30) & (s1 < 70)
+        ax.scatter(
+            embedding[cut, 0],
+            embedding[cut, 1],
+            embedding[cut, 2],
+            s=marker_size,
+            c="g",
+            label="Shallow silicon (SS)",
+        )
+        cut = (s2 < 30) & (s1 > 70) & (s1 < 100)
+        ax.scatter(
+            embedding[cut, 0],
+            embedding[cut, 1],
+            embedding[cut, 2],
+            s=marker_size,
+            c="black",
+            label="Core normal (CN)",
+        )
+        cut = (s2 < 30) & (s1 > 100)
+        ax.scatter(
+            embedding[cut, 0],
+            embedding[cut, 1],
+            embedding[cut, 2],
+            s=marker_size,
+            c="b",
+            label="Broad line (BL)",
+        )
+
+        ax.set_xlabel("Component 0")
+        ax.set_ylabel("Component 1")
+        ax.set_zlabel("Component 2")
+
+        ax.legend()
+
