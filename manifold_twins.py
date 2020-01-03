@@ -61,9 +61,6 @@ class ManifoldTwinsAnalysis:
                 continue
             self.attrition_enough_spectra += 1
 
-            # Update the phases on the spectra
-            supernova.reference_time += supernova.salt_fit['t0']
-
             daymax_err = supernova.salt_fit['t0_err']
             if daymax_err > 1.0:
                 self.print_verbose(
@@ -1281,10 +1278,8 @@ class ManifoldTwinsAnalysis:
 
     def calculate_salt_hubble_residuals(self, peculiar_velocity=300):
         """Calculate SALT hubble residuals"""
-        # For SALT, can only use SNe that are in the good sample
-        self.salt_mask = np.array(
-            [i["idr.subset"] in ["training", "validation"] for i in self.targets]
-        )
+        # For SALT, can only use SNe that have valid fits.
+        self.salt_mask = np.array([i.has_valid_salt_fit() for i in self.targets])
 
         # We also require reasonable redshifts and colors for the determination
         # of standardization parameters. The redshift_color_mask produced by
