@@ -1,5 +1,7 @@
 """
 Simplest spectral indicator measurements
+
+This code is originally from Sam Dixon (https://github.com/sam-dixon)
 """
 
 import pickle

@@ -23,15 +23,15 @@ def compile_stan_model(model_code, verbosity=1, cache_dir='./stan_cache'):
     try:
         model = pickle.load(open(cache_path, "rb"))
         if verbosity >= 1:
-            print("Loaded cached stan model")
+            print("    Loaded cached stan model")
     except FileNotFoundError:
         if verbosity >= 1:
-            print("Compiling stan model")
+            print("    Compiling stan model...")
         model = pystan.StanModel(model_code=model_code)
         with open(cache_path, "wb") as cache_file:
             pickle.dump(model, cache_file)
         if verbosity >= 1:
-            print("Compilation successful")
+            print("    Compilation successful")
 
     return code_hash, model
 
@@ -74,7 +74,7 @@ def load_stan_result(hash_str, cache_dir='./stan_cache'):
 
     try:
         with open(path, "rb") as infile:
-            print("Using saved stan result")
+            print("    Using saved stan result")
             return pickle.load(infile)
     except IOError:
         pass

@@ -27,13 +27,45 @@ class ManifoldTwinsAnalysis:
         # Update the default settings with any arguments that came in from kwargs.
         self.settings = dict(default_settings, **kwargs)
 
+    def run_analysis(self):
+        """Run the full analysis"""
+        self.load_dataset()
+
+        self.print_verbose("Estimating the spectra at maximum light...")
+        self.model_maximum_spectra()
+
+        self.print_verbose("Reading between the lines...")
+        self.read_between_the_lines()
+
+        self.print_verbose("Building masks...")
+        self.build_masks()
+
+        self.print_verbose("Generating the manifold learning embedding...")
+        self.generate_embedding()
+
+        self.print_verbose("Calculating spectral indicators...")
+        self.calculate_spectral_indicators()
+
+        self.print_verbose("Fitting GP hyperparameters...")
+        self.fit_gp()
+
+        self.print_verbose("Calculating SALT2 Hubble residuals...")
+        self.salt_residuals = self.calculate_salt_hubble_residuals(minimum_verbosity=1)
+
+        self.print_verbose("Loading host galaxy data...")
+        self.load_host_data()
+
+        self.print_verbose("Done!")
+
+    def load_dataset(self):
+        """Load the dataset"""
         self.print_verbose("Loading dataset...")
-        self.print_verbose("IDR:          %s" % self.settings['idr'])
+        self.print_verbose("    IDR:          %s" % self.settings['idr'])
         self.print_verbose(
-            "Phase range: [%.1f, %.1f]"
+            "    Phase range: [%.1f, %.1f] days"
             % (-self.settings['phase_range'], self.settings['phase_range'])
         )
-        self.print_verbose("Bin velocity: %.1f" % self.settings['bin_velocity'])
+        self.print_verbose("    Bin velocity: %.1f" % self.settings['bin_velocity'])
 
         self.dataset = Dataset.from_idr(
             os.path.join(self.settings['idr_directory'], self.settings['idr']),
@@ -56,7 +88,7 @@ class ManifoldTwinsAnalysis:
                 self.print_verbose(
                     "Cutting %s, not enough spectra to guarantee a "
                     "good LC fit" % supernova,
-                    2,
+                    minimum_verbosity=2,
                 )
                 continue
             self.attrition_enough_spectra += 1
@@ -65,7 +97,7 @@ class ManifoldTwinsAnalysis:
             if daymax_err > 1.0:
                 self.print_verbose(
                     "Cutting %s, day max err %.2f too high" % (supernova, daymax_err),
-                    2,
+                    minimum_verbosity=2,
                 )
                 continue
             self.attrition_salt_daymax += 1
@@ -134,6 +166,7 @@ class ManifoldTwinsAnalysis:
         self.salt_x1 = self.salt_fits['x1'].data
         self.salt_colors = self.salt_fits['c'].data
         self.salt_phases = np.array([i.phase for i in self.spectra])
+        self.salt_mask = np.array([i.has_valid_salt_fit() for i in self.targets])
 
         # Record which targets should be in the validation set.
         self.train_mask = np.array(
@@ -153,6 +186,9 @@ class ManifoldTwinsAnalysis:
         )
         self.dataset_hash = md5(hash_info.encode("ascii")).hexdigest()
 
+        # Load a dictionary that maps IDR names into IAU ones.
+        iau_data = np.genfromtxt('./data/iau_name_map.txt', dtype=str)
+        self.iau_name_map = {i:j for i, j in iau_data}
 
     def _check_spectrum(self, spectrum):
         """Check if a spectrum is valid or not"""
@@ -172,7 +208,7 @@ class ManifoldTwinsAnalysis:
             self.print_verbose(
                 "Cutting %s, start signal-to-noise %.2f "
                 "too low." % (spectrum, s2n_start),
-                2,
+                minimum_verbosity=2,
             )
             return False
 
@@ -215,9 +251,9 @@ class ManifoldTwinsAnalysis:
 
         return res
 
-    def print_verbose(self, message, minimum_verbosity=1):
+    def print_verbose(self, *args, minimum_verbosity=1):
         if self.settings['verbosity'] >= minimum_verbosity:
-            print(message)
+            print(*args)
 
     def model_maximum_spectra(self, use_cache=True):
         """Estimate the spectra for each of our SNe Ia at maximum light.
@@ -236,6 +272,9 @@ class ManifoldTwinsAnalysis:
         If use_cache is True, then the fitted model will be retrieved from a
         cache if it exists. Make sure to run with use_cache=False if making
         modifications to the model!
+
+        If use_x1 is True, a SALT2 x1-dependent term will be included in the
+        model.
         """
         # Load the stan model
         model_path = "./stan_models/phase_interpolation_analytic.stan"
@@ -249,6 +288,7 @@ class ManifoldTwinsAnalysis:
             self.dataset_hash
             + ';' + model_hash
             + ';' + str(self.settings['maximum_num_phase_coefficients'])
+            + ';' + str(self.settings['maximum_use_salt_x1'])
         )
         self.maximum_hash = md5(hash_info.encode("ascii")).hexdigest()
 
@@ -313,6 +353,11 @@ class ManifoldTwinsAnalysis:
 
             return init_params
 
+        if self.settings['maximum_use_salt_x1']:
+            x1 = self.salt_x1
+        else:
+            x1 = np.zeros(num_targets)
+
         stan_data = {
             "num_targets": num_targets,
             "num_spectra": num_spectra,
@@ -325,7 +370,7 @@ class ManifoldTwinsAnalysis:
             "spectra_target_counts": spectra_target_counts,
             "target_map": self.target_map + 1,  # stan uses 1-based indexing
             "maximum_map": np.where(self.center_mask)[0] + 1,
-            "salt_x1": self.salt_x1,
+            "salt_x1": x1,
         }
 
         sys.stdout.flush()
@@ -452,8 +497,8 @@ class ManifoldTwinsAnalysis:
             self.settings['mask_uncertainty_fraction']
         )
         self.print_verbose(
-            "Masking %d/%d targets whose interpolation uncertainty power is "
-            "more than %.3f of the intrinsic power."
+            "    Masking %d/%d targets whose interpolation uncertainty power is \n"
+            "    more than %.3f of the intrinsic power."
             % (np.sum(~self.uncertainty_mask), len(self.uncertainty_mask),
                self.settings['mask_uncertainty_fraction'])
         )
@@ -474,12 +519,22 @@ class ManifoldTwinsAnalysis:
             n_components=self.settings['isomap_num_components']
         )
 
-        mask = self.uncertainty_mask
+        good_mask = self.uncertainty_mask
         self.isomap_diffs = self.scale_flux / self.mean_flux - 1
 
-        self.embedding = utils.fill_mask(
-            self.isomap.fit_transform(self.isomap_diffs[mask]), mask
-        )
+        # Build the embedding using well-measured targets
+        ref_embedding = self.isomap.fit_transform(self.isomap_diffs[good_mask])
+
+        # Evaluate the coordinates in the embedding for the remaining targets.
+        other_embedding = self.isomap.transform(self.isomap_diffs[~good_mask])
+
+        # Combine everything into a single array.
+        embedding = np.zeros((len(self.targets),
+                              self.settings['isomap_num_components']))
+        embedding[good_mask] = ref_embedding
+        embedding[~good_mask] = other_embedding
+
+        self.embedding = embedding
 
     def calculate_spectral_indicators(self):
         """Calculate spectral indicators for all of the features"""
@@ -487,7 +542,7 @@ class ManifoldTwinsAnalysis:
 
         for idx in range(len(self.scale_flux)):
             spec = specind.Spectrum(
-                self.wave, self.scale_flux[idx], self.scale_fluxerr[idx] ** 2
+                self.wave, self.scale_flux[idx], self.scale_fluxerr[idx]**2
             )
             indicators = spec.get_spin_dict()
             all_indicators.append(indicators)
@@ -497,15 +552,14 @@ class ManifoldTwinsAnalysis:
         self.spectral_indicators = all_indicators
 
     def _build_gp(self, x, yerr, hyperparameters=None, phase=False):
-        """Build a george Gaussian Process object and kernels.
-        """
+        """Build a george Gaussian Process object and kernels."""
         import george
         from george import kernels
 
         if hyperparameters is None:
             hyperparameters = self.gp_hyperparameters
 
-        use_yerr = np.sqrt(yerr ** 2 + hyperparameters[1] ** 2 * np.ones(len(x)))
+        use_yerr = np.sqrt(yerr**2 + hyperparameters[1]**2 * np.ones(len(x)))
 
         ndim = x.shape[-1]
         if phase:
@@ -513,14 +567,14 @@ class ManifoldTwinsAnalysis:
         else:
             use_dim = list(range(ndim))
 
-        kernel = hyperparameters[2] ** 2 * kernels.Matern32Kernel(
-            [hyperparameters[3] ** 2] * len(use_dim), ndim=ndim, axes=use_dim
+        kernel = hyperparameters[2]**2 * kernels.Matern32Kernel(
+            [hyperparameters[3]**2] * len(use_dim), ndim=ndim, axes=use_dim
         )
 
         if phase:
             # Additional kernel in phase direction.
-            kernel += hyperparameters[4] ** 2 * kernels.Matern32Kernel(
-                [hyperparameters[4] ** 2], ndim=ndim, axes=ndim - 1
+            kernel += hyperparameters[4]**2 * kernels.Matern32Kernel(
+                [hyperparameters[4]**2], ndim=ndim, axes=ndim - 1
             )
 
         gp = george.GP(kernel)
@@ -528,19 +582,8 @@ class ManifoldTwinsAnalysis:
 
         return gp, hyperparameters[0]
 
-    def _predict_gp(
-        self,
-        pred_x,
-        pred_color,
-        cond_x,
-        cond_y,
-        cond_yerr,
-        cond_color,
-        hyperparameters=None,
-        return_cov=False,
-        phase=False,
-        **kwargs
-    ):
+    def _predict_gp(self, pred_x, pred_color, cond_x, cond_y, cond_yerr, cond_color,
+                    hyperparameters=None, return_cov=False, phase=False, **kwargs):
         """Predict a Gaussian Process on the given data with a single shared
         length scale and assumed intrinsic dispersion
         """
@@ -565,18 +608,9 @@ class ManifoldTwinsAnalysis:
 
         return pred
 
-    def _predict_gp_oos(
-        self,
-        x,
-        y,
-        yerr,
-        color,
-        hyperparameters=None,
-        condition_mask=None,
-        return_var=False,
-        phase=False,
-        groups=None,
-    ):
+    def _predict_gp_oos(self, x, y, yerr, color, hyperparameters=None,
+                        condition_mask=None, return_var=False, phase=False,
+                        groups=None,):
         """Do out-of-sample Gaussian Process predictions given hyperparameters
 
         A binary mask can be specified as condition_mask to specify a subset of
@@ -597,7 +631,7 @@ class ManifoldTwinsAnalysis:
             cond_yerr = yerr[condition_mask]
             cond_color = color[condition_mask]
 
-        # Do out-of-sample predictions for element in the condition sample.
+        # Do out-of-sample predictions for elements in the condition sample.
         cond_preds = []
         cond_vars = []
         for idx in range(len(cond_x)):
@@ -662,223 +696,186 @@ class ManifoldTwinsAnalysis:
         else:
             return all_preds
 
-    def get_peculiar_velocity_uncertainty(self, peculiar_velocity=300):
+    def get_peculiar_velocity_uncertainties(self):
         """Calculate dispersion added to the magnitude due to host galaxy
         peculiar velocity
         """
         pec_vel_dispersion = (5 / np.log(10)) * (
-            peculiar_velocity / 3e5 / self.redshifts
+            self.settings['peculiar_velocity'] / 3e5 / self.redshifts
         )
 
         return pec_vel_dispersion
 
-    def get_mags(self, kind="rbtl", full=False, peculiar_velocity=300):
+    def get_gp_data(self, kind="rbtl"):
+        """Return the data needed for GP fits along with the corresponding masks.
+
+        Parameters
+        ----------
+        kind : {'rbtl', 'salt', 'salt_raw'}
+            The kind of magnitude data to return. The options are:
+            - rbtl: RBTL magnitudes and colors.
+            - salt: Corrected SALT2 magnitudes and colors.
+            - salt_raw: Uncorrected SALT2 magnitudes and colors.
+
+        Returns
+        -------
+        coordinates : numpy.array
+            The coordinates to evaluate the GP over.
+        mags : numpy.array
+            A list of magnitudes for each supernova in the sample.
+        mag_errs : numpy.array
+            The uncertainties on the magnitudes. This only includes measurement
+            uncertainties, not model ones (since the GP will handle that). Since we are
+            dealing with high signal-to-noise light curves/spectra, the color and
+            magnitude measurement errors are very small and difficult to propagate so I
+            ignore them. This therefore only includes contributions from peculiar
+            velocity.
+        colors : numpy.array
+            A list of colors for each supernova in the sample.
+        condition_mask : numpy.array
+            The mask that should be used for conditioning the GP.
+        """
         if kind == "rbtl":
             mags = self.rbtl_mags
             colors = self.rbtl_colors
-            if full:
-                mask = self.mag_mask & self.interp_mask
-            else:
-                mask = self.good_mag_mask & self.interp_mask
+            condition_mask = self.uncertainty_mask & self.redshift_color_mask
         elif kind == "salt" or kind == "salt_raw":
             if kind == "salt":
                 mags = self.salt_hr
             elif kind == "salt_raw":
                 mags = self.salt_hr_raw
             colors = self.salt_colors
-            if full:
-                mask = self.salt_mask & self.interp_mask
-            else:
-                mask = self.good_salt_mask & self.interp_mask
+
+            condition_mask = (
+                self.salt_mask
+                & self.uncertainty_mask
+                & self.redshift_color_mask
+            )
         else:
             raise ManifoldTwinsException("Unknown kind %s!" % kind)
 
-        pec_vel_dispersion = self.get_peculiar_velocity_uncertainty(peculiar_velocity)
+        # Assume that we can ignore measurement uncertainties for the magnitude errors,
+        # so the only contribution is from peculiar velocities.
+        mag_errs = self.get_peculiar_velocity_uncertainties()
 
-        use_mags = mags[mask]
-        use_colors = colors[mask]
-        use_embedding = self.embedding[mask]
-        use_pec_vel_dispersion = pec_vel_dispersion[mask]
+        # Use the Isomap embedding for the GP coordinates.
+        coordinates = self.embedding
 
-        return use_embedding, use_mags, use_colors, use_pec_vel_dispersion, mask
+        # If the analysis is blinded, only use the training data.
+        if self.settings['blinded']:
+            condition_mask &= self.train_mask
 
-    def _calculate_gp_residuals(self, hyperparameters=None, kind="rbtl", **kwargs):
-        """Calculate the GP prediction residuals for a set of
-        hyperparameters
-        """
-        use_embedding, use_mags, use_colors, use_pec_vel, use_mask = self.get_mags(kind)
+        return coordinates, mags, mag_errs, colors, condition_mask
 
-        preds = self._predict_gp_oos(
-            use_embedding, use_mags, use_pec_vel, use_colors, hyperparameters, **kwargs
-        )
-        residuals = use_mags - preds
-        return residuals
+    def fit_gp(self, kind="rbtl", start_hyperparameters=[0.0, 0.05, 0.2, 5]):
+        """Fit a Gaussian Process to predict the residual magnitudes."""
+        # Fit the hyperparameters on the full conditioning sample.
+        coordinates, mags, mag_errs, colors, condition_mask = self.get_gp_data(kind)
 
-    def _calculate_gp_dispersion(self, hyperparameters=None, metric=np.std, **kwargs):
-        """Calculate the GP dispersion for a set of hyperparameters"""
-        return metric(self._calculate_gp_residuals(hyperparameters, **kwargs))
+        condition_coordinates = coordinates[condition_mask]
+        condition_mags = mags[condition_mask]
+        condition_mag_errs = mag_errs[condition_mask]
+        condition_colors = colors[condition_mask]
 
-    def fit_gp(
-        self, verbose=True, kind="rbtl", start_hyperparameters=[0.0, 0.05, 0.2, 5]
-    ):
-        """Fit a Gaussian Process to predict magnitudes for the data."""
-        if verbose:
-            print("Fitting GP hyperparameters...")
+        def negative_log_likelihood(hyperparameters):
+            gp, color_slope = self._build_gp(
+                condition_coordinates, condition_mag_errs, hyperparameters
+            )
+            residuals = condition_mags - condition_colors * color_slope
+            result = -gp.log_likelihood(residuals)
 
-        good_embedding, good_mags, good_colors, good_pec_vel, good_mask = self.get_mags(
-            kind
-        )
+            return result
 
-        def to_min(x):
-            gp, color_slope = self._build_gp(good_embedding, good_pec_vel, x)
-            residuals = good_mags - good_colors * color_slope
-            return -gp.log_likelihood(residuals)
+        res = minimize(negative_log_likelihood, start_hyperparameters)
 
-        res = minimize(to_min, start_hyperparameters)
-        if verbose:
-            print("Fit result:")
-            print(res)
         self.gp_hyperparameters = res.x
+        self.gp_negative_log_likelihood = negative_log_likelihood
 
-        full_embedding, full_mags, full_colors, full_pec_vel, full_mask = self.get_mags(
-            kind, full=True
-        )
-
-        preds, pred_vars = self._predict_gp_oos(
-            full_embedding,
-            full_mags,
-            full_pec_vel,
-            full_colors,
-            condition_mask=good_mask[full_mask],
+        pred_mags, pred_vars = self._predict_gp_oos(
+            coordinates,
+            mags,
+            mag_errs,
+            colors,
+            condition_mask = condition_mask,
             return_var=True,
         )
 
-        self.corr_mags = fill_mask(full_mags - preds, full_mask)
-        self.corr_vars = fill_mask(pred_vars + full_pec_vel ** 2, full_mask)
-        good_corr_mags = self.corr_mags[good_mask]
+        self.corr_mags = mags - pred_mags
+        self.corr_vars = pred_vars + mag_errs**2
+        good_corr_mags = self.corr_mags[condition_mask]
 
-        # Calculate the parameter covariance. I use a code that I wrote for my
-        # scene_model package for this, which won't always be available... I
-        # should probably break that out into something different.
-        try:
-            from scene_model import calculate_covariance_finite_difference
+        # Calculate the parameter covariance using a custom code that numerically
+        # estimates the Hessian using a finite difference method with adaptive step
+        # sizes.
+        param_names = ["param_%d" for i in range(len(self.gp_hyperparameters))]
 
-            param_names = ["param_%d" for i in range(len(self.gp_hyperparameters))]
-
-            def chisq(x):
-                # My covariance algorithm requires a "chi-square" which isn't
-                # really a chi-square any more. It is a negative log-likelihood
-                # times 2... I really need to put this in some separate package
-                # thing.
-                return to_min(x) * 2
-
-            cov = calculate_covariance_finite_difference(
-                chisq,
-                param_names,
-                self.gp_hyperparameters,
-                [(None, None)] * len(param_names),
-                verbose=verbose,
-            )
-
-            self.gp_hyperparameter_covariance = cov
-            if verbose:
-                print(
-                    "Fit uncertainty:",
-                    np.sqrt(np.diag(self.gp_hyperparameter_covariance)),
-                )
-        except ModuleNotFoundError:
-            print(
-                "WARNING: scene_model not available, so couldn't calculate "
-                "hyperparameter covariance."
-            )
-            pass
-
-        if verbose:
-            print("Fit NMAD:       ", math.nmad(good_corr_mags))
-            print("Fit std:        ", np.std(good_corr_mags))
-
-    def apply_gp_standardization(
-        self, verbose=True, hyperparameters=None, phase=False, kind="rbtl"
-    ):
-        """Use a Gaussian Process to predict magnitudes for the data.
-
-        If hyperparameters is specified, then the hyperparameters are used
-        directly. Otherwise, the hyperparameters are fit to the data.
-        """
-        if hyperparameters is None:
-            print("Fitting GP hyperparameters...")
-
-            def to_min(x):
-                return self._calculate_gp_dispersion(x, phase=phase, kind=kind)
-
-            res = minimize(to_min, [0.1, 0.3, 5])
-            print("Fit result:")
-            print(res)
-            self.gp_hyperparameters = res.x
-        else:
-            print("Using fixed GP hyperparameters...")
-            self.gp_hyperparameters = hyperparameters
-
-        good_embedding, good_mags, good_colors, good_pec_vel, good_mask = self.get_mags(
-            kind
+        cov = math.calculate_covariance_finite_difference(
+            negative_log_likelihood,
+            param_names,
+            self.gp_hyperparameters,
+            [(None, None)] * len(param_names),
+            verbose=self.settings['verbosity'] > 2,
         )
-        full_embedding, full_mags, full_colors, full_pec_vel, full_mask = self.get_mags(
-            kind, full=True
-        )
+        self.gp_hyperparameter_covariance = cov
+
+        uncertainties = np.sqrt(np.diag(cov))
+
+        self.print_verbose("    Fit result:           %s" % res['message'])
+        self.print_verbose("    Color scale:          %.3f ± %.3f"
+                           % (res.x[0], uncertainties[0]))
+        self.print_verbose("    Intrinsic dispersion: %.3f ± %.3f mag"
+                           % (res.x[1], uncertainties[1]))
+        self.print_verbose("    GP kernel amplitude:  %.3f ± %.3f mag"
+                           % (res.x[2], uncertainties[2]))
+        self.print_verbose("    GP length scale:      %.3f ± %.3f"
+                           % (res.x[3], uncertainties[3]))
+
+        self.print_verbose("    Fit NMAD:             %.3f mag"
+                           % math.nmad(good_corr_mags))
+        self.print_verbose("    Fit std:              %.3f mag"
+                           % np.std(good_corr_mags))
+
+    def _calculate_gp_residuals(self, hyperparameters=None, kind="rbtl", **kwargs):
+        """Calculate the GP prediction residuals for a set of hyperparameters"""
+        coordinates, mags, mag_errs, colors, condition_mask = self.get_gp_data(kind)
 
         preds = self._predict_gp_oos(
-            full_embedding,
-            full_mags,
-            full_pec_vel,
-            full_colors,
-            condition_mask=good_mask[full_mask],
-            phase=phase,
+            coordinates, mags, mag_errs, colors, hyperparameters, condition_mask,
+            **kwargs
         )
 
-        self.corr_mags = fill_mask(full_mags - preds, full_mask)
-        good_corr_mags = self.corr_mags[good_mask]
+        residuals = mags - preds
 
-        print("Fit NMAD:       ", math.nmad(good_corr_mags))
-        print("Fit std:        ", np.std(good_corr_mags))
+        return residuals
 
     def predict_gp(self, x, colors=None, hyperparameters=None, kind="rbtl", **kwargs):
-        """Do the GP prediction at specific points using the full GP
-        conditioning.
-
-        Note: this function uses all of the training data to make predictions.
-        Use _predict_gp_oos or something similar to properly do out of sample
-        predictions if you want to predict on the training data.
-        """
-        use_embedding, use_mags, use_colors, use_pec_vel, use_mask = self.get_mags(kind)
+        """Evaluate the GP prediction at arbitrary points."""
+        data_coordinates, data_mags, data_mag_errs, data_colors, condition_mask = \
+            self.get_gp_data(kind)
 
         preds = self._predict_gp(
             x,
             colors,
-            use_embedding,
-            use_mags,
-            use_pec_vel,
-            use_colors,
+            data_coordinates[condition_mask],
+            data_mags[condition_mask],
+            data_mag_errs[condition_mask],
+            data_colors[condition_mask],
             hyperparameters,
             **kwargs
         )
 
         return preds
 
-    def plot_gp(
-        self,
-        axis_1=0,
-        axis_2=1,
-        hyperparameters=None,
-        num_points=50,
-        border=0.5,
-        marker_size=60,
-        vmin=-0.2,
-        vmax=0.2,
-        kind="rbtl",
-        cmap=plt.cm.coolwarm,
-    ):
+    def plot_gp(self, axis_1=0, axis_2=1, hyperparameters=None, num_points=50,
+                border=0.5, marker_size=60, vmin=-0.2, vmax=0.2, kind="rbtl",
+                cmap=plt.cm.coolwarm):
         """Plot the GP predictions with data overlayed."""
-        use_embedding, use_mags, use_colors, use_pec_vel, use_mask = self.get_mags(kind)
+        coordinates, mags, mag_errs, colors, condition_mask = self.get_gp_data(kind)
+
+        # Only show the data that were used for conditioning the GP.
+        use_coordinates = coordinates[condition_mask]
+        use_mags = mags[condition_mask]
+        use_colors = colors[condition_mask]
 
         # Apply the color correction to the magnitudes.
         if hyperparameters is None:
@@ -888,8 +885,8 @@ class ManifoldTwinsAnalysis:
 
         use_mags = use_mags - color_slope * use_colors
 
-        x = use_embedding[:, axis_1]
-        y = use_embedding[:, axis_2]
+        x = use_coordinates[:, axis_1]
+        y = use_coordinates[:, axis_2]
 
         min_x = np.nanmin(x) - border
         max_x = np.nanmax(x) + border
@@ -912,8 +909,8 @@ class ManifoldTwinsAnalysis:
         pred = pred.reshape(plot_x.shape)
 
         self.scatter(
-            fill_mask(use_mags, use_mask),
-            mask=use_mask,
+            mags,
+            mask=condition_mask,
             label="Residual magnitude",
             axis_1=axis_1,
             axis_2=axis_2,
@@ -939,12 +936,19 @@ class ManifoldTwinsAnalysis:
     def load_host_data(self):
         """Load host data from Rigault et al. 2019"""
         host_data = Table.read(
-            "./data/host_properties_rigault_2019.txt", format="ascii"
+            # "./data/host_properties_rigault_2019.txt", format="ascii"
+            "./data/host_properties_rigault_full.csv"
         )
         all_host_idx = []
         host_mask = []
         for target in self.targets:
             name = target.name
+
+            # Note: not applicable if we are using the full list from private
+            # communication.
+            # Rigault et al. 2019 uses IAU names, so convert our names if appropriate.
+            # name = self.iau_name_map.get(name, name)
+
             match = host_data["name"] == name
 
             # Check if found
@@ -958,12 +962,12 @@ class ManifoldTwinsAnalysis:
 
         # Save the loaded data
         self.host_mask = np.array(host_mask)
-        fill_host_data = fill_mask(host_data[all_host_idx].as_array(), self.host_mask)
+        fill_host_data = utils.fill_mask(host_data[all_host_idx].as_array(),
+                                         self.host_mask)
         self.host_data = Table(fill_host_data, names=host_data.columns)
 
-    def plot_host_variable(
-        self, variable, mask=None, mag_type="rbtl", match_masks=False, threshold=None
-    ):
+    def plot_host_variable(self, variable, mask=None, mag_type="rbtl",
+                           match_masks=False, threshold=None):
         """Plot diagnostics for some host variable.
 
         Valid variable names are the keys in the host_data Table that comes
@@ -1221,179 +1225,248 @@ class ManifoldTwinsAnalysis:
 
         return mags_20
 
-    def _evaluate_salt_hubble_residuals(
-        self, MB, alpha, beta, intrinsic_dispersion, peculiar_velocity_uncertainty
-    ):
+    def _evaluate_salt_hubble_residuals(self, additional_covariates,
+                                        intrinsic_dispersion, ref_mag, alpha, beta,
+                                        *covariate_slopes):
         """Evaluate SALT Hubble residuals for a given set of standardization
         parameters
 
         Parameters
-        ==========
-        MB : float
+        ----------
+        additional_covariates : list of arrays
+            Additional covariates to use in the fits (e.g. host properties). This should
+            be a list of arrays, each of which has the same length as the number of
+            SNe Ia in the dataset.
+        intrinsic_dispersion : float
+            Assumed intrinsic dispersion of the sample.
+        ref_mag : float
             The intrinsic B-band brightness of Type Ia supernovae
         alpha : float
             Standardization coefficient for the SALT2 x1 parameter
         beta : float
             Standardization coefficient for the SALT2 color parameter
-        intrinsic_dispersion : float
-            Assumed intrinsic dispersion of the sample.
+        covariate_slopes : list
+            Slopes for each of the additional covariates.
 
         Returns
-        =======
+        -------
         residuals : numpy.array
             The Hubble residuals for every target in the dataset
         residual_uncertainties : numpy.array
             The uncertainties on the Hubble residuals for every target in the
             dataset.
         """
-        mb = -2.5*np.log10(self.salt_fits['x0'].data)
-        x0_err = self.salt_fits['x0_err'].data
-        mb_err = frac_to_mag(x0_err / self.salt_fits['x0'].data)
-        x1_err = self.salt_fits['x1_err'].data
-        color_err = self.salt_fits['c_err'].data
+        salt_fits = self.salt_fits
 
-        cov_mb_x1 = self.salt_fits['covariance'].data[:, 1, 2] * -mb_err / x0_err
-        cov_color_mb = self.salt_fits['covariance'].data[:, 1, 3] * -mb_err / x0_err
-        cov_color_x1 = self.salt_fits['covariance'].data[:, 2, 3]
+        mb = -2.5*np.log10(salt_fits['x0'].data)
+        x0_err = salt_fits['x0_err'].data
+        mb_err = utils.frac_to_mag(x0_err / salt_fits['x0'].data)
+        x1_err = salt_fits['x1_err'].data
+        color_err = salt_fits['c_err'].data
 
-        residuals = (
-            mb
-            - MB
-            + alpha * self.salt_x1
-            - beta * self.salt_colors
+        cov_mb_x1 = salt_fits['covariance'].data[:, 1, 2] * -mb_err / x0_err
+        cov_color_mb = salt_fits['covariance'].data[:, 1, 3] * -mb_err / x0_err
+        cov_color_x1 = salt_fits['covariance'].data[:, 2, 3]
+
+        peculiar_velocity_uncertainties = self.get_peculiar_velocity_uncertainties()
+
+        model = (
+            ref_mag
+            - alpha * salt_fits['x1'].data
+            + beta * salt_fits['c'].data
         )
 
+        for slope, covariate in zip(covariate_slopes, additional_covariates):
+            model += slope * covariate
+
         residual_uncertainties = np.sqrt(
-            intrinsic_dispersion ** 2
-            + peculiar_velocity_uncertainty ** 2
-            + mb_err ** 2
-            + alpha ** 2 * x1_err ** 2
-            + beta ** 2 * color_err ** 2
+            intrinsic_dispersion**2
+            + peculiar_velocity_uncertainties**2
+            + mb_err**2
+            + alpha**2 * x1_err**2
+            + beta**2 * color_err**2
             + 2 * alpha * cov_mb_x1
             - 2 * beta * cov_color_mb
             - 2 * alpha * beta * cov_color_x1
         )
 
+        residuals = mb - model
+
         return residuals, residual_uncertainties
 
-    def calculate_salt_hubble_residuals(self, peculiar_velocity=300):
-        """Calculate SALT hubble residuals"""
-        # For SALT, can only use SNe that have valid fits.
-        self.salt_mask = np.array([i.has_valid_salt_fit() for i in self.targets])
+    def calculate_salt_hubble_residuals(self, mask=None, additional_covariates=[],
+                                        bootstrap=False, minimum_verbosity=2):
+        """Calculate SALT2 Hubble residuals
 
-        # We also require reasonable redshifts and colors for the determination
-        # of standardization parameters. The redshift_color_mask produced by
-        # the read_between_the_lines algorithm does this.
-        self.good_salt_mask = self.salt_mask & self.redshift_color_mask
+        This follows the standard procedure of estimating the alpha and beta correction
+        parameters using an assumed intrinsic dispersion, then solving for the intrinsic
+        dispersion that sets the chi-square to 1. We repeat this procedure until the
+        intrinsic dispersion converges.
+        """
+        # Start with a complete mask if there wasn't a user specified one.
+        if mask is None:
+            mask = np.ones(len(self.salt_fits), dtype=bool)
 
-        # Get the uncertainty due to peculiar velocities
-        pec_vel_disp = self.get_peculiar_velocity_uncertainty(peculiar_velocity)
+        # Reject bad SALT2 fits.
+        mask &= self.salt_mask
 
-        mask = self.good_salt_mask
+        # Require reasonable redshifts and colors for the determination of
+        # standardization parameters. The redshift_color_mask produced by the
+        # read_between_the_lines algorithm does this.
+        mask &= self.redshift_color_mask
+
+        if bootstrap:
+            # Do a bootstrap resampling of the dataset. We can use this to estimate
+            # uncertainties on all of our parameters.
+            mask = np.random.choice(np.where(mask)[0], np.sum(mask))
 
         # Starting value for intrinsic dispersion. We will update this in each
         # round to set chi2 = 1
         intrinsic_dispersion = 0.1
 
         for i in range(5):
-            def calc_dispersion(MB, alpha, beta, intrinsic_dispersion):
-                residuals, residual_uncertainties = self._evaluate_salt_hubble_residuals(
-                    MB, alpha, beta, intrinsic_dispersion, pec_vel_disp
-                )
+            def calc_dispersion(*fit_parameters):
+                residuals, residual_uncertainties = \
+                    self._evaluate_salt_hubble_residuals(additional_covariates,
+                                                         *fit_parameters)
 
                 mask_residuals = residuals[mask]
                 mask_residual_uncertainties = residual_uncertainties[mask]
 
-                weights = 1 / mask_residual_uncertainties ** 2
+                weights = 1 / mask_residual_uncertainties**2
 
                 dispersion = np.sqrt(
-                    np.sum(weights * mask_residuals ** 2)
+                    np.sum(weights * mask_residuals**2)
                     / np.sum(weights)
-                    # / ((len(mask_residuals) - 1) / len(mask_residuals))
                 )
 
                 return dispersion
 
-            def to_min(x):
-                return calc_dispersion(*x, intrinsic_dispersion)
+            def to_min_fit_parameters(x):
+                return calc_dispersion(intrinsic_dispersion, *x)
 
-            res = minimize(to_min, [-10, 0.13, 3.0])
+            start_vals = [-10, 0.13, 3.0] + [0.] * len(additional_covariates)
 
-            wrms = res.fun
+            res = minimize(to_min_fit_parameters, start_vals)
+            fit_parameters = res.x
 
-            MB, alpha, beta = res.x
-
-            print("Pass %d, MB=%.3f, alpha=%.3f, beta=%.3f" % (i, MB, alpha, beta))
+            self.print_verbose(
+                f"Pass {i}, ref_mag={fit_parameters[0]:.3f}, "
+                f"alpha={fit_parameters[1]:.3f}, "
+                f"beta={fit_parameters[2]:.3f}",
+                minimum_verbosity=2
+            )
 
             # Reestimate intrinsic dispersion.
             def chisq(intrinsic_dispersion):
-                residuals, residual_uncertainties = self._evaluate_salt_hubble_residuals(
-                    MB, alpha, beta, intrinsic_dispersion, pec_vel_disp
-                )
+                residuals, residual_uncertainties = \
+                    self._evaluate_salt_hubble_residuals(
+                        additional_covariates, intrinsic_dispersion, *res.x
+                    )
 
                 mask_residuals = residuals[mask]
                 mask_residual_uncertainties = residual_uncertainties[mask]
 
+                dof = 4 + len(additional_covariates)
+
                 return np.sum(
-                    mask_residuals ** 2 / mask_residual_uncertainties ** 2
-                ) / (len(mask_residuals) - 4)
+                    mask_residuals**2 / mask_residual_uncertainties**2
+                ) / (len(mask_residuals) - dof)
 
-            def to_min(x):
+            def to_min_intrinsic_dispersion(x):
                 chi2 = chisq(x[0])
-                return (chi2 - 1) ** 2
+                return (chi2 - 1)**2
 
-            res_int_disp = minimize(to_min, [intrinsic_dispersion])
+            res_int_disp = minimize(to_min_intrinsic_dispersion, [intrinsic_dispersion])
 
             intrinsic_dispersion = res_int_disp.x[0]
-            print("  -> new intrinsic_dispersion=%.3f" % intrinsic_dispersion)
+            self.print_verbose("  -> new intrinsic_dispersion=%.3f"
+                               % intrinsic_dispersion, minimum_verbosity=2)
 
-        self.salt_MB = MB
-        self.salt_alpha = alpha
-        self.salt_beta = beta
-        self.salt_intrinsic_dispersion = intrinsic_dispersion
-        self.salt_wrms = wrms
-
+        # Calculate the SALT2 Hubble residuals.
         residuals, residual_uncertainties = self._evaluate_salt_hubble_residuals(
-            MB, alpha, beta, intrinsic_dispersion, pec_vel_disp
+            additional_covariates, intrinsic_dispersion, *fit_parameters
         )
 
-        self.salt_hr = residuals
-        self.salt_hr_uncertainties = residual_uncertainties
-
-        # Save SALT2 uncertainties without the intrinsic dispersion component.
-        self.salt_hr_raw_uncertainties = np.sqrt(
-            residual_uncertainties ** 2 - intrinsic_dispersion ** 2
+        # Calculate SALT2 uncertainties without the intrinsic dispersion component.
+        raw_uncertainties = np.sqrt(
+            residual_uncertainties**2 - intrinsic_dispersion**2
         )
 
         # Save raw residuals without alpha and beta corrections applied.
-        raw_residuals, raw_residual_uncertainties = self._evaluate_salt_hubble_residuals(
-            MB, 0, 0, intrinsic_dispersion, pec_vel_disp
-        )
-        self.salt_hr_raw = raw_residuals - np.mean(raw_residuals)
+        raw_residuals, raw_residual_uncertainties = \
+            self._evaluate_salt_hubble_residuals(
+                additional_covariates, intrinsic_dispersion, 0., 0., *fit_parameters[2:]
+            )
 
-        print("SALT2 Hubble fit: ")
-        print("    MB:   ", self.salt_MB)
-        print("    alpha:", self.salt_alpha)
-        print("    beta: ", self.salt_beta)
-        print("    σ_int:", self.salt_intrinsic_dispersion)
-        print("    RMS:  ", np.std(self.salt_hr[self.good_salt_mask]))
-        print("    NMAD: ", math.nmad(self.salt_hr[self.good_salt_mask]))
-        print("    WRMS: ", self.salt_wrms)
+        result = {
+            'mask': mask,
+            'ref_mag': res.x[0],
+            'alpha': res.x[1],
+            'beta': res.x[2],
+            'intrinsic_dispersion': intrinsic_dispersion,
+            'wrms': res.fun,
+            'rms': np.std(residuals[mask]),
+            'nmad': math.nmad(residuals[mask]),
+            'corr_mags': residuals,
+            'corr_mag_uncertainties': residual_uncertainties,
+            'corr_mag_raw_uncertainties': raw_uncertainties,
+            'corr_mags_raw': raw_residuals,
+        }
 
-    def scatter(
-        self,
-        variable,
-        mask=None,
-        weak_mask=None,
-        label="",
-        axis_1=0,
-        axis_2=1,
-        axis_3=None,
-        marker_size=40,
-        cmap=plt.cm.coolwarm,
-        invert_colorbar=False,
-        **kwargs
-    ):
+        mv = {'minimum_verbosity': minimum_verbosity}
+
+        self.print_verbose("SALT2 Hubble fit: ", **mv)
+        self.print_verbose(f"    ref_mag: {result['ref_mag']:.3f}", **mv)
+        self.print_verbose(f"    alpha:   {result['alpha']:.3f}", **mv)
+        self.print_verbose(f"    beta:    {result['beta']:.3f}", **mv)
+        self.print_verbose(f"    σ_int:   {result['intrinsic_dispersion']:.3f}", **mv)
+        self.print_verbose(f"    RMS:     {result['rms']:.3f}", **mv)
+        self.print_verbose(f"    NMAD:    {result['nmad']:.3f}", **mv)
+        self.print_verbose(f"    WRMS:    {result['wrms']:.3f}", **mv)
+
+        for i in range(len(additional_covariates)):
+            covariate_amplitude = res.x[3 + i]
+            result[f'covariate_amplitude_{i}'] = covariate_amplitude
+            self.print_verbose(f"    amp[{i}]:  {covariate_amplitude:.3f}", **mv)
+
+        return result
+
+    def bootstrap_salt_hubble_residuals(self, num_samples=100, *args, **kwargs):
+        """Bootstrap the SALT2 Hubble residual fit to get parameter uncertainties.
+
+        Parameters
+        ----------
+        num_samples : int
+            The number of bootstrapping samples to do.
+        *args, **kwargs
+            Additional parameters passed to calculate_salt_hubble_residuals.
+
+        Returns
+        -------
+        reference : dict
+            The reference values for the non-bootstrapped data.
+        samples : `astropy.table.Table`
+            A Table with all of the keys from calculate_salt_hubble_residuals with one
+            row per bootstrap.
+        """
+        # Calculate reference result
+        reference = self.calculate_salt_hubble_residuals(*args, **kwargs)
+
+        # Do bootstrapping
+        samples = []
+        for i in tqdm.tqdm(range(num_samples)):
+            samples.append(
+                self.calculate_salt_hubble_residuals(*args, bootstrap=True, **kwargs)
+            )
+
+        samples = Table(samples)
+
+        return reference, samples
+
+    def scatter(self, variable, mask=None, weak_mask=None, label="", axis_1=0,
+                axis_2=1, axis_3=None, marker_size=40, cmap=plt.cm.coolwarm,
+                invert_colorbar=False, **kwargs):
         """Make a scatter plot of some variable against the Isomap coefficients
 
         variable is the values to use for the color axis of the plot.
@@ -1599,3 +1672,33 @@ class ManifoldTwinsAnalysis:
 
         ax.legend()
 
+    def plot_spectrum_flux(self, ax, flux, fluxerr=None, *args, c=None, label=None,
+                           **kwargs):
+        """Plot a spectrum.
+
+        See settings.py for details about the normalization and labeling of spectra.
+        """
+        wave = self.wave
+
+        plot_format = self.settings['spectrum_plot_format']
+
+        if plot_format == 'f_nu':
+            plot_scale = wave**2 / 5000.**2
+        elif plot_format == 'f_lambda':
+            plot_scale = 1.
+        else:
+            raise ManifoldTwinsException(f"Invalid plot format {plot_format}")
+
+        ax.plot(wave, flux * plot_scale, c=c, label=label)
+
+        if fluxerr is not None:
+            ax.fill_between(
+                wave,
+                (flux - fluxerr) * plot_scale,
+                (flux + fluxerr) * plot_scale,
+                facecolor=c,
+                alpha=0.3,
+            )
+
+        ax.set_xlabel(self.settings['spectrum_plot_xlabel'])
+        ax.set_ylabel(self.settings['spectrum_plot_ylabel'])
