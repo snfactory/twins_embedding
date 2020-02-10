@@ -1,5 +1,7 @@
 """Default settings to use for the analysis"""
 
+from matplotlib import pyplot as plt
+
 default_settings = {
     # Is the analysis being blinded?
     "blinded": True,
@@ -31,8 +33,8 @@ default_settings = {
 
     # Parameters for the differential evolution model used to model spectra at maximum
     # light.
-    "maximum_num_phase_coefficients": 4,
-    "maximum_use_salt_x1": False,
+    "differential_evolution_num_phase_coefficients": 4,
+    "differential_evolution_use_salt_x1": False,
 
     # Parameters for the read between the lines algorithm.
     "rbtl_fiducial_rv": 2.8,
@@ -52,8 +54,16 @@ default_settings = {
     "peculiar_velocity": 360,
 
     # Figure parameters
-    # Default size for figures
-    "default_figsize": (5., 4.),
+
+    # Matplotlib settings for all figures.
+    "matplotlib_settings": {
+        "figure.figsize": (5., 4.),
+        "figure.autolayout": True,
+        "figure.max_open_warning": 1000,
+    },
+
+    # Colormap to use
+    "colormap": plt.cm.coolwarm,
 
     # Size of full-page spectra figures
     "spectrum_plot_figsize": (9., 4.),

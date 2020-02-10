@@ -27,12 +27,17 @@ class ManifoldTwinsAnalysis:
         # Update the default settings with any arguments that came in from kwargs.
         self.settings = dict(default_settings, **kwargs)
 
+        # Set the default matplotlib figure size from the settings.
+        import matplotlib as mpl
+        for key, value in self.settings['matplotlib_settings'].items():
+            mpl.rcParams[key] = value
+
     def run_analysis(self):
         """Run the full analysis"""
         self.load_dataset()
 
         self.print_verbose("Estimating the spectra at maximum light...")
-        self.model_maximum_spectra()
+        self.model_differential_evolution()
 
         self.print_verbose("Reading between the lines...")
         self.read_between_the_lines()
@@ -41,16 +46,18 @@ class ManifoldTwinsAnalysis:
         self.build_masks()
 
         self.print_verbose("Generating the manifold learning embedding...")
-        self.generate_embedding()
+        self.embedding = self.generate_embedding()
 
         self.print_verbose("Calculating spectral indicators...")
         self.calculate_spectral_indicators()
 
         self.print_verbose("Fitting GP hyperparameters...")
-        self.fit_gp()
+        self.gp_residuals = self.fit_gp()
 
-        self.print_verbose("Calculating SALT2 Hubble residuals...")
-        self.salt_residuals = self.calculate_salt_hubble_residuals(minimum_verbosity=1)
+        self.print_verbose("Calculating SALT2 magnitude residuals...")
+        self.salt_magnitude_residuals = self.calculate_salt_magnitude_residuals(
+            minimum_verbosity=1
+        )
 
         self.print_verbose("Loading host galaxy data...")
         self.load_host_data()
@@ -255,7 +262,7 @@ class ManifoldTwinsAnalysis:
         if self.settings['verbosity'] >= minimum_verbosity:
             print(*args)
 
-    def model_maximum_spectra(self, use_cache=True):
+    def model_differential_evolution(self, use_cache=True):
         """Estimate the spectra for each of our SNe Ia at maximum light.
 
         This algorithm uses all targets with multiple spectra to model the differential
@@ -287,17 +294,17 @@ class ManifoldTwinsAnalysis:
         hash_info = (
             self.dataset_hash
             + ';' + model_hash
-            + ';' + str(self.settings['maximum_num_phase_coefficients'])
-            + ';' + str(self.settings['maximum_use_salt_x1'])
+            + ';' + str(self.settings['differential_evolution_num_phase_coefficients'])
+            + ';' + str(self.settings['differential_evolution_use_salt_x1'])
         )
-        self.maximum_hash = md5(hash_info.encode("ascii")).hexdigest()
+        self.differential_evolution_hash = md5(hash_info.encode("ascii")).hexdigest()
 
         # If we ran this model before, read the cached result if we can.
         if use_cache:
-            cache_result = utils.load_stan_result(self.maximum_hash)
+            cache_result = utils.load_stan_result(self.differential_evolution_hash)
             if cache_result is not None:
                 # Found the cached result. Load it and don't redo the fit.
-                self.maximum_result = cache_result
+                self.differential_evolution_result = cache_result
                 self.maximum_flux = cache_result["maximum_flux"]
                 self.maximum_fluxerr = cache_result["maximum_fluxerr"]
                 return
@@ -305,7 +312,9 @@ class ManifoldTwinsAnalysis:
         num_targets = len(self.targets)
         num_spectra = len(self.flux)
         num_wave = len(self.wave)
-        num_phase_coefficients = self.settings['maximum_num_phase_coefficients']
+        num_phase_coefficients = self.settings[
+            'differential_evolution_num_phase_coefficients'
+        ]
 
         if num_phase_coefficients % 2 != 0:
             raise Exception("ERROR: Must have an even number of phase " "coefficients.")
@@ -353,7 +362,7 @@ class ManifoldTwinsAnalysis:
 
             return init_params
 
-        if self.settings['maximum_use_salt_x1']:
+        if self.settings['differential_evolution_use_salt_x1']:
             x1 = self.salt_x1
         else:
             x1 = np.zeros(num_targets)
@@ -378,12 +387,12 @@ class ManifoldTwinsAnalysis:
             data=stan_data, init=stan_init, verbose=True, iter=20000, history_size=100
         )
 
-        self.maximum_result = result
+        self.differential_evolution_result = result
         self.maximum_flux = result["maximum_flux"]
         self.maximum_fluxerr = result["maximum_fluxerr"]
 
         # Save the output to cache it for future runs.
-        utils.save_stan_result(self.maximum_hash, result)
+        utils.save_stan_result(self.differential_evolution_hash, result)
 
     def read_between_the_lines(self, use_cache=True):
         """Run the read between the lines algorithm.
@@ -407,7 +416,7 @@ class ManifoldTwinsAnalysis:
 
         # Build a hash that is unique to this dataset/analysis
         hash_info = (
-            self.maximum_hash
+            self.differential_evolution_hash
             + ';' + model_hash
             + ';' + str(self.settings['rbtl_fiducial_rv'])
         )
@@ -475,6 +484,9 @@ class ManifoldTwinsAnalysis:
         self.scale_flux = self.maximum_flux / result['model_scales']
         self.scale_fluxerr = self.maximum_fluxerr / result['model_scales']
 
+        # Calculate fractional differences from the mean spectrum.
+        self.fractional_differences = self.scale_flux / self.mean_flux - 1
+
     def build_masks(self):
         """Build masks that are used in the various manifold learning and magnitude
         analyses
@@ -497,7 +509,7 @@ class ManifoldTwinsAnalysis:
             self.settings['mask_uncertainty_fraction']
         )
         self.print_verbose(
-            "    Masking %d/%d targets whose interpolation uncertainty power is \n"
+            "    Masking %d/%d targets whose uncertainty power is \n"
             "    more than %.3f of the intrinsic power."
             % (np.sum(~self.uncertainty_mask), len(self.uncertainty_mask),
                self.settings['mask_uncertainty_fraction'])
@@ -512,29 +524,30 @@ class ManifoldTwinsAnalysis:
                 & (self.rbtl_colors - np.median(self.rbtl_colors) < 0.5)
             )
 
-    def generate_embedding(self):
-        """Generate the manifold learning embedding."""
-        self.isomap = Isomap(
-            n_neighbors=self.settings['isomap_num_neighbors'],
-            n_components=self.settings['isomap_num_components']
-        )
+    def generate_embedding(self, num_neighbors=None, num_components=-1):
+        """Generate a manifold learning embedding."""
+        if num_neighbors is None:
+            num_neighbors = self.settings['isomap_num_neighbors']
+
+        if num_components == -1:
+            num_components = self.settings['isomap_num_components']
+
+        isomap = Isomap(n_neighbors=num_neighbors, n_components=num_components)
 
         good_mask = self.uncertainty_mask
-        self.isomap_diffs = self.scale_flux / self.mean_flux - 1
 
         # Build the embedding using well-measured targets
-        ref_embedding = self.isomap.fit_transform(self.isomap_diffs[good_mask])
+        ref_embedding = isomap.fit_transform(self.fractional_differences[good_mask])
 
         # Evaluate the coordinates in the embedding for the remaining targets.
-        other_embedding = self.isomap.transform(self.isomap_diffs[~good_mask])
+        other_embedding = isomap.transform(self.fractional_differences[~good_mask])
 
         # Combine everything into a single array.
-        embedding = np.zeros((len(self.targets),
-                              self.settings['isomap_num_components']))
+        embedding = np.zeros((len(self.targets), ref_embedding.shape[1]))
         embedding[good_mask] = ref_embedding
         embedding[~good_mask] = other_embedding
 
-        self.embedding = embedding
+        return embedding
 
     def calculate_spectral_indicators(self):
         """Calculate spectral indicators for all of the features"""
@@ -696,12 +709,12 @@ class ManifoldTwinsAnalysis:
         else:
             return all_preds
 
-    def get_peculiar_velocity_uncertainties(self):
+    def calculate_peculiar_velocity_uncertainties(self, redshifts):
         """Calculate dispersion added to the magnitude due to host galaxy
         peculiar velocity
         """
         pec_vel_dispersion = (5 / np.log(10)) * (
-            self.settings['peculiar_velocity'] / 3e5 / self.redshifts
+            self.settings['peculiar_velocity'] / 3e5 / redshifts
         )
 
         return pec_vel_dispersion
@@ -756,7 +769,7 @@ class ManifoldTwinsAnalysis:
 
         # Assume that we can ignore measurement uncertainties for the magnitude errors,
         # so the only contribution is from peculiar velocities.
-        mag_errs = self.get_peculiar_velocity_uncertainties()
+        mag_errs = self.calculate_peculiar_velocity_uncertainties(self.redshifts)
 
         # Use the Isomap embedding for the GP coordinates.
         coordinates = self.embedding
@@ -768,7 +781,7 @@ class ManifoldTwinsAnalysis:
         return coordinates, mags, mag_errs, colors, condition_mask
 
     def fit_gp(self, kind="rbtl", start_hyperparameters=[0.0, 0.05, 0.2, 5]):
-        """Fit a Gaussian Process to predict the residual magnitudes."""
+        """Fit a Gaussian Process to predict the magnitude residuals."""
         # Fit the hyperparameters on the full conditioning sample.
         coordinates, mags, mag_errs, colors, condition_mask = self.get_gp_data(kind)
 
@@ -911,7 +924,7 @@ class ManifoldTwinsAnalysis:
         self.scatter(
             mags,
             mask=condition_mask,
-            label="Residual magnitude",
+            label="Magnitude residuals",
             axis_1=axis_1,
             axis_2=axis_2,
             vmin=vmin,
@@ -975,7 +988,7 @@ class ManifoldTwinsAnalysis:
 
         mag_type selects which magnitudes to plot. The options are:
         - rbtl: use the RBTL magnitudes (default)
-        - salt: use the SALT2 corrected Hubble residuals
+        - salt: use the SALT2 corrected magnitude residuals
 
         If match_masks is True, then the masks required for both the Isomap
         manifold and SALT2 are applied (leaving a smaller dataset).
@@ -1074,9 +1087,9 @@ class ManifoldTwinsAnalysis:
         """
         from scipy.spatial.distance import pdist
 
-        mask = self.interp_mask
+        mask = self.uncertainty_mask
 
-        spec_dists = pdist(self.iso_diffs[mask])
+        spec_dists = pdist(self.fractional_differences[mask])
         embedding_dists = pdist(self.embedding[mask])
 
         plt.figure()
@@ -1098,9 +1111,9 @@ class ManifoldTwinsAnalysis:
         from scipy.stats import percentileofscore
         import pandas as pd
 
-        mask = self.interp_mask
+        mask = self.uncertainty_mask
 
-        spec_dists = pdist(self.iso_diffs[mask])
+        spec_dists = pdist(self.fractional_differences[mask])
         embedding_dists = pdist(self.embedding[mask])
 
         splits = {
@@ -1184,7 +1197,7 @@ class ManifoldTwinsAnalysis:
         if mask is None:
             mask = self.good_mag_mask
 
-        use_spec = self.iso_diffs[mask]
+        use_spec = self.fractional_differences[mask]
         use_mag = self.rbtl_mags[mask]
 
         use_mag -= np.mean(use_mag)
@@ -1225,10 +1238,10 @@ class ManifoldTwinsAnalysis:
 
         return mags_20
 
-    def _evaluate_salt_hubble_residuals(self, additional_covariates,
-                                        intrinsic_dispersion, ref_mag, alpha, beta,
-                                        *covariate_slopes):
-        """Evaluate SALT Hubble residuals for a given set of standardization
+    def _evaluate_salt_magnitude_residuals(self, additional_covariates,
+                                           intrinsic_dispersion, ref_mag, alpha, beta,
+                                           *covariate_slopes):
+        """Evaluate SALT2 magnitude residuals for a given set of standardization
         parameters
 
         Parameters
@@ -1251,10 +1264,9 @@ class ManifoldTwinsAnalysis:
         Returns
         -------
         residuals : numpy.array
-            The Hubble residuals for every target in the dataset
+            The SALT2 magnitude residuals for every target in the dataset
         residual_uncertainties : numpy.array
-            The uncertainties on the Hubble residuals for every target in the
-            dataset.
+            The associated uncertainties on the SALT2 magnitude residuals.
         """
         salt_fits = self.salt_fits
 
@@ -1268,7 +1280,8 @@ class ManifoldTwinsAnalysis:
         cov_color_mb = salt_fits['covariance'].data[:, 1, 3] * -mb_err / x0_err
         cov_color_x1 = salt_fits['covariance'].data[:, 2, 3]
 
-        peculiar_velocity_uncertainties = self.get_peculiar_velocity_uncertainties()
+        peculiar_velocity_uncertainties = \
+            self.calculate_peculiar_velocity_uncertainties(self.redshifts)
 
         model = (
             ref_mag
@@ -1294,9 +1307,9 @@ class ManifoldTwinsAnalysis:
 
         return residuals, residual_uncertainties
 
-    def calculate_salt_hubble_residuals(self, mask=None, additional_covariates=[],
+    def calculate_salt_magnitude_residuals(self, mask=None, additional_covariates=[],
                                         bootstrap=False, minimum_verbosity=2):
-        """Calculate SALT2 Hubble residuals
+        """Calculate SALT2 magnitude residuals
 
         This follows the standard procedure of estimating the alpha and beta correction
         parameters using an assumed intrinsic dispersion, then solving for the intrinsic
@@ -1327,8 +1340,8 @@ class ManifoldTwinsAnalysis:
         for i in range(5):
             def calc_dispersion(*fit_parameters):
                 residuals, residual_uncertainties = \
-                    self._evaluate_salt_hubble_residuals(additional_covariates,
-                                                         *fit_parameters)
+                    self._evaluate_salt_magnitude_residuals(additional_covariates,
+                                                            *fit_parameters)
 
                 mask_residuals = residuals[mask]
                 mask_residual_uncertainties = residual_uncertainties[mask]
@@ -1360,7 +1373,7 @@ class ManifoldTwinsAnalysis:
             # Reestimate intrinsic dispersion.
             def chisq(intrinsic_dispersion):
                 residuals, residual_uncertainties = \
-                    self._evaluate_salt_hubble_residuals(
+                    self._evaluate_salt_magnitude_residuals(
                         additional_covariates, intrinsic_dispersion, *res.x
                     )
 
@@ -1383,8 +1396,8 @@ class ManifoldTwinsAnalysis:
             self.print_verbose("  -> new intrinsic_dispersion=%.3f"
                                % intrinsic_dispersion, minimum_verbosity=2)
 
-        # Calculate the SALT2 Hubble residuals.
-        residuals, residual_uncertainties = self._evaluate_salt_hubble_residuals(
+        # Calculate the SALT2 magnitude residuals.
+        residuals, residual_uncertainties = self._evaluate_salt_magnitude_residuals(
             additional_covariates, intrinsic_dispersion, *fit_parameters
         )
 
@@ -1395,7 +1408,7 @@ class ManifoldTwinsAnalysis:
 
         # Save raw residuals without alpha and beta corrections applied.
         raw_residuals, raw_residual_uncertainties = \
-            self._evaluate_salt_hubble_residuals(
+            self._evaluate_salt_magnitude_residuals(
                 additional_covariates, intrinsic_dispersion, 0., 0., *fit_parameters[2:]
             )
 
@@ -1416,7 +1429,7 @@ class ManifoldTwinsAnalysis:
 
         mv = {'minimum_verbosity': minimum_verbosity}
 
-        self.print_verbose("SALT2 Hubble fit: ", **mv)
+        self.print_verbose("SALT2 magnitude residuals fit: ", **mv)
         self.print_verbose(f"    ref_mag: {result['ref_mag']:.3f}", **mv)
         self.print_verbose(f"    alpha:   {result['alpha']:.3f}", **mv)
         self.print_verbose(f"    beta:    {result['beta']:.3f}", **mv)
@@ -1432,32 +1445,32 @@ class ManifoldTwinsAnalysis:
 
         return result
 
-    def bootstrap_salt_hubble_residuals(self, num_samples=100, *args, **kwargs):
-        """Bootstrap the SALT2 Hubble residual fit to get parameter uncertainties.
+    def bootstrap_salt_magnitude_residuals(self, num_samples=100, *args, **kwargs):
+        """Bootstrap the SALT2 magnitude residuals fit to get parameter uncertainties.
 
         Parameters
         ----------
         num_samples : int
             The number of bootstrapping samples to do.
         *args, **kwargs
-            Additional parameters passed to calculate_salt_hubble_residuals.
+            Additional parameters passed to calculate_salt_magnitude_residuals.
 
         Returns
         -------
         reference : dict
             The reference values for the non-bootstrapped data.
         samples : `astropy.table.Table`
-            A Table with all of the keys from calculate_salt_hubble_residuals with one
-            row per bootstrap.
+            A Table with all of the keys from calculate_salt_magnitude_residuals with
+            one row per bootstrap.
         """
         # Calculate reference result
-        reference = self.calculate_salt_hubble_residuals(*args, **kwargs)
+        reference = self.calculate_salt_magnitude_residuals(*args, **kwargs)
 
         # Do bootstrapping
         samples = []
         for i in tqdm.tqdm(range(num_samples)):
             samples.append(
-                self.calculate_salt_hubble_residuals(*args, bootstrap=True, **kwargs)
+                self.calculate_salt_magnitude_residuals(*args, bootstrap=True, **kwargs)
             )
 
         samples = Table(samples)
@@ -1672,8 +1685,8 @@ class ManifoldTwinsAnalysis:
 
         ax.legend()
 
-    def plot_spectrum_flux(self, ax, flux, fluxerr=None, *args, c=None, label=None,
-                           **kwargs):
+    def plot_flux(self, ax, flux, fluxerr=None, *args, c=None, label=None,
+                  uncertainty_label=None, **kwargs):
         """Plot a spectrum.
 
         See settings.py for details about the normalization and labeling of spectra.
@@ -1689,16 +1702,47 @@ class ManifoldTwinsAnalysis:
         else:
             raise ManifoldTwinsException(f"Invalid plot format {plot_format}")
 
-        ax.plot(wave, flux * plot_scale, c=c, label=label)
-
+        flux = np.atleast_2d(flux)
         if fluxerr is not None:
-            ax.fill_between(
-                wave,
-                (flux - fluxerr) * plot_scale,
-                (flux + fluxerr) * plot_scale,
-                facecolor=c,
-                alpha=0.3,
-            )
+            fluxerr = np.atleast_2d(fluxerr)
+
+        for idx in range(len(flux)):
+            if label is None:
+                use_label = None
+            elif np.isscalar(label):
+                if idx == 0:
+                    use_label = label
+                else:
+                    use_label = None
+            else:
+                use_label = label[idx]
+
+            ax.plot(wave, flux[idx] * plot_scale, *args, c=c, label=use_label, **kwargs)
+
+            if fluxerr is not None:
+                if uncertainty_label is None:
+                    use_uncertainty_label = None
+                elif np.isscalar(uncertainty_label):
+                    if idx == 0:
+                        use_uncertainty_label = uncertainty_label
+                    else:
+                        use_uncertainty_label = None
+                else:
+                    use_uncertainty_label = uncertainty_label[idx]
+
+                ax.fill_between(
+                    wave,
+                    (flux[idx] - fluxerr[idx]) * plot_scale,
+                    (flux[idx] + fluxerr[idx]) * plot_scale,
+                    facecolor=c,
+                    alpha=0.3,
+                    label=use_uncertainty_label,
+                )
 
         ax.set_xlabel(self.settings['spectrum_plot_xlabel'])
         ax.set_ylabel(self.settings['spectrum_plot_ylabel'])
+        ax.autoscale()
+        ax.set_ylim(0, None)
+
+        if label is not None:
+            ax.legend()
