@@ -12,6 +12,7 @@ import sys
 import tqdm
 
 from settings import default_settings
+from manifold_gp import ManifoldGaussianProcess
 import utils
 import specind
 
@@ -52,7 +53,7 @@ class ManifoldTwinsAnalysis:
         self.calculate_spectral_indicators()
 
         self.print_verbose("Fitting GP hyperparameters...")
-        self.gp_residuals = self.fit_gp()
+        self.rbtl_gp = self.calculate_gp_magnitude_residuals()
 
         self.print_verbose("Calculating SALT2 magnitude residuals...")
         self.salt_magnitude_residuals = self.calculate_salt_magnitude_residuals(
@@ -564,151 +565,6 @@ class ManifoldTwinsAnalysis:
 
         self.spectral_indicators = all_indicators
 
-    def _build_gp(self, x, yerr, hyperparameters=None, phase=False):
-        """Build a george Gaussian Process object and kernels."""
-        import george
-        from george import kernels
-
-        if hyperparameters is None:
-            hyperparameters = self.gp_hyperparameters
-
-        use_yerr = np.sqrt(yerr**2 + hyperparameters[1]**2 * np.ones(len(x)))
-
-        ndim = x.shape[-1]
-        if phase:
-            use_dim = list(range(ndim - 1))
-        else:
-            use_dim = list(range(ndim))
-
-        kernel = hyperparameters[2]**2 * kernels.Matern32Kernel(
-            [hyperparameters[3]**2] * len(use_dim), ndim=ndim, axes=use_dim
-        )
-
-        if phase:
-            # Additional kernel in phase direction.
-            kernel += hyperparameters[4]**2 * kernels.Matern32Kernel(
-                [hyperparameters[4]**2], ndim=ndim, axes=ndim - 1
-            )
-
-        gp = george.GP(kernel)
-        gp.compute(x, use_yerr)
-
-        return gp, hyperparameters[0]
-
-    def _predict_gp(self, pred_x, pred_color, cond_x, cond_y, cond_yerr, cond_color,
-                    hyperparameters=None, return_cov=False, phase=False, **kwargs):
-        """Predict a Gaussian Process on the given data with a single shared
-        length scale and assumed intrinsic dispersion
-        """
-        gp, color_slope = self._build_gp(
-            cond_x, cond_yerr, hyperparameters, phase=phase
-        )
-
-        use_cond_y = cond_y - color_slope * cond_color
-
-        pred = gp.predict(
-            use_cond_y, np.atleast_2d(pred_x), return_cov=return_cov, **kwargs
-        )
-
-        if pred_color is not None:
-            color_correction = pred_color * color_slope
-            if isinstance(pred, tuple):
-                # Have uncertainty too, add only to the predictions.
-                pred = (pred[0] + color_correction, *pred[1:])
-            else:
-                # Only the predictions.
-                pred += color_correction
-
-        return pred
-
-    def _predict_gp_oos(self, x, y, yerr, color, hyperparameters=None,
-                        condition_mask=None, return_var=False, phase=False,
-                        groups=None,):
-        """Do out-of-sample Gaussian Process predictions given hyperparameters
-
-        A binary mask can be specified as condition_mask to specify a subset of
-        the data to use for conditioning the GP. The predictions will be done
-        on the full sample.
-        """
-        if np.isscalar(color):
-            color = np.ones(len(x)) * color
-
-        if condition_mask is None:
-            cond_x = x
-            cond_y = y
-            cond_yerr = yerr
-            cond_color = color
-        else:
-            cond_x = x[condition_mask]
-            cond_y = y[condition_mask]
-            cond_yerr = yerr[condition_mask]
-            cond_color = color[condition_mask]
-
-        # Do out-of-sample predictions for elements in the condition sample.
-        cond_preds = []
-        cond_vars = []
-        for idx in range(len(cond_x)):
-            if groups is not None:
-                match_idx = groups[idx] == groups
-                del_x = cond_x[~match_idx]
-                del_y = cond_y[~match_idx]
-                del_yerr = cond_yerr[~match_idx]
-                del_color = cond_color[~match_idx]
-            else:
-                del_x = np.delete(cond_x, idx, axis=0)
-                del_y = np.delete(cond_y, idx, axis=0)
-                del_yerr = np.delete(cond_yerr, idx, axis=0)
-                del_color = np.delete(cond_color, idx, axis=0)
-            pred = self._predict_gp(
-                cond_x[idx],
-                cond_color[idx],
-                del_x,
-                del_y,
-                del_yerr,
-                del_color,
-                hyperparameters,
-                return_var=return_var,
-                phase=phase,
-            )
-            if return_var:
-                cond_preds.append(pred[0][0])
-                cond_vars.append(pred[1][0])
-            else:
-                cond_preds.append(pred[0])
-
-        # Do standard predictions for elements that we aren't conditioning on.
-        if condition_mask is None:
-            all_preds = np.array(cond_preds)
-            if return_var:
-                all_vars = np.array(cond_vars)
-        else:
-            other_pred = self._predict_gp(
-                x[~condition_mask],
-                color[~condition_mask],
-                cond_x,
-                cond_y,
-                cond_yerr,
-                cond_color,
-                hyperparameters,
-                return_var=return_var,
-                phase=phase,
-            )
-            all_preds = np.zeros(len(x))
-            all_vars = np.zeros(len(x))
-
-            if return_var:
-                other_pred, other_vars = other_pred
-                all_vars[condition_mask] = cond_vars
-                all_vars[~condition_mask] = other_vars
-
-            all_preds[condition_mask] = cond_preds
-            all_preds[~condition_mask] = other_pred
-
-        if return_var:
-            return all_preds, all_vars
-        else:
-            return all_preds
-
     def calculate_peculiar_velocity_uncertainties(self, redshifts):
         """Calculate dispersion added to the magnitude due to host galaxy
         peculiar velocity
@@ -719,7 +575,7 @@ class ManifoldTwinsAnalysis:
 
         return pec_vel_dispersion
 
-    def get_gp_data(self, kind="rbtl"):
+    def _get_gp_data(self, kind="rbtl"):
         """Return the data needed for GP fits along with the corresponding masks.
 
         Parameters
@@ -752,13 +608,22 @@ class ManifoldTwinsAnalysis:
             mags = self.rbtl_mags
             colors = self.rbtl_colors
             condition_mask = self.uncertainty_mask & self.redshift_color_mask
-        elif kind == "salt" or kind == "salt_raw":
-            if kind == "salt":
-                mags = self.salt_hr
-            elif kind == "salt_raw":
-                mags = self.salt_hr_raw
-            colors = self.salt_colors
 
+            # Assume that we can ignore measurement uncertainties for the magnitude errors,
+            # so the only contribution is from peculiar velocities.
+            mag_errs = self.calculate_peculiar_velocity_uncertainties(self.redshifts)
+        elif kind == "salt_raw" or kind == "salt":
+            if kind == "salt_raw":
+                # Evaluate the residuals with all model terms set to zero.
+                mags, mag_errs = self._evaluate_salt_magnitude_residuals(
+                    [], 0., 0., 0., 0.
+                )
+            elif kind == "salt":
+                # Use the standard SALT2 fit as a baseline.
+                mags = self.salt_magnitude_residuals['corr_mags']
+                mag_errs = self.salt_magnitude_residuals['corr_mag_raw_uncertainties']
+
+            colors = self.salt_colors
             condition_mask = (
                 self.salt_mask
                 & self.uncertainty_mask
@@ -767,184 +632,52 @@ class ManifoldTwinsAnalysis:
         else:
             raise ManifoldTwinsException("Unknown kind %s!" % kind)
 
-        # Assume that we can ignore measurement uncertainties for the magnitude errors,
-        # so the only contribution is from peculiar velocities.
-        mag_errs = self.calculate_peculiar_velocity_uncertainties(self.redshifts)
-
         # Use the Isomap embedding for the GP coordinates.
         coordinates = self.embedding
 
-        # If the analysis is blinded, only use the training data.
+        # If the analysis is blinded, only use the training data for conditioning.
         if self.settings['blinded']:
             condition_mask &= self.train_mask
 
         return coordinates, mags, mag_errs, colors, condition_mask
 
-    def fit_gp(self, kind="rbtl", start_hyperparameters=[0.0, 0.05, 0.2, 5]):
-        """Fit a Gaussian Process to predict the magnitude residuals."""
+    def calculate_gp_magnitude_residuals(self, kind="rbtl", mask=None,
+                                         additional_covariates=[], verbosity=None):
+        """Calculate magnitude residuals using a GP over a given latent space."""
+        if verbosity is None:
+            verbosity = self.settings['verbosity']
+
         # Fit the hyperparameters on the full conditioning sample.
-        coordinates, mags, mag_errs, colors, condition_mask = self.get_gp_data(kind)
+        coordinates, mags, mag_errs, colors, raw_mask = self._get_gp_data(kind)
 
-        condition_coordinates = coordinates[condition_mask]
-        condition_mags = mags[condition_mask]
-        condition_mag_errs = mag_errs[condition_mask]
-        condition_colors = colors[condition_mask]
+        # Build a list of linear covariates to use in the model that includes the color
+        # and any user-specified covariates.
+        covariates = [
+            colors,
+        ]
 
-        def negative_log_likelihood(hyperparameters):
-            gp, color_slope = self._build_gp(
-                condition_coordinates, condition_mag_errs, hyperparameters
-            )
-            residuals = condition_mags - condition_colors * color_slope
-            result = -gp.log_likelihood(residuals)
+        if additional_covariates:
+            covariates.append(additional_covariates)
 
-            return result
+        covariates = np.vstack(covariates)
 
-        res = minimize(negative_log_likelihood, start_hyperparameters)
+        # Apply the user-specified mask if one was given.
+        if mask is None:
+            mask = raw_mask
+        else:
+            mask = mask & raw_mask
 
-        self.gp_hyperparameters = res.x
-        self.gp_negative_log_likelihood = negative_log_likelihood
-
-        pred_mags, pred_vars = self._predict_gp_oos(
-            coordinates,
+        manifold_gp = ManifoldGaussianProcess(
+            self.embedding,
             mags,
             mag_errs,
-            colors,
-            condition_mask = condition_mask,
-            return_var=True,
+            covariates,
+            mask,
         )
 
-        self.corr_mags = mags - pred_mags
-        self.corr_vars = pred_vars + mag_errs**2
-        good_corr_mags = self.corr_mags[condition_mask]
+        manifold_gp.fit(verbosity=verbosity)
 
-        # Calculate the parameter covariance using a custom code that numerically
-        # estimates the Hessian using a finite difference method with adaptive step
-        # sizes.
-        param_names = ["param_%d" for i in range(len(self.gp_hyperparameters))]
-
-        cov = math.calculate_covariance_finite_difference(
-            negative_log_likelihood,
-            param_names,
-            self.gp_hyperparameters,
-            [(None, None)] * len(param_names),
-            verbose=self.settings['verbosity'] > 2,
-        )
-        self.gp_hyperparameter_covariance = cov
-
-        uncertainties = np.sqrt(np.diag(cov))
-
-        self.print_verbose("    Fit result:           %s" % res['message'])
-        self.print_verbose("    Color scale:          %.3f ± %.3f"
-                           % (res.x[0], uncertainties[0]))
-        self.print_verbose("    Intrinsic dispersion: %.3f ± %.3f mag"
-                           % (res.x[1], uncertainties[1]))
-        self.print_verbose("    GP kernel amplitude:  %.3f ± %.3f mag"
-                           % (res.x[2], uncertainties[2]))
-        self.print_verbose("    GP length scale:      %.3f ± %.3f"
-                           % (res.x[3], uncertainties[3]))
-
-        self.print_verbose("    Fit NMAD:             %.3f mag"
-                           % math.nmad(good_corr_mags))
-        self.print_verbose("    Fit std:              %.3f mag"
-                           % np.std(good_corr_mags))
-
-    def _calculate_gp_residuals(self, hyperparameters=None, kind="rbtl", **kwargs):
-        """Calculate the GP prediction residuals for a set of hyperparameters"""
-        coordinates, mags, mag_errs, colors, condition_mask = self.get_gp_data(kind)
-
-        preds = self._predict_gp_oos(
-            coordinates, mags, mag_errs, colors, hyperparameters, condition_mask,
-            **kwargs
-        )
-
-        residuals = mags - preds
-
-        return residuals
-
-    def predict_gp(self, x, colors=None, hyperparameters=None, kind="rbtl", **kwargs):
-        """Evaluate the GP prediction at arbitrary points."""
-        data_coordinates, data_mags, data_mag_errs, data_colors, condition_mask = \
-            self.get_gp_data(kind)
-
-        preds = self._predict_gp(
-            x,
-            colors,
-            data_coordinates[condition_mask],
-            data_mags[condition_mask],
-            data_mag_errs[condition_mask],
-            data_colors[condition_mask],
-            hyperparameters,
-            **kwargs
-        )
-
-        return preds
-
-    def plot_gp(self, axis_1=0, axis_2=1, hyperparameters=None, num_points=50,
-                border=0.5, marker_size=60, vmin=-0.2, vmax=0.2, kind="rbtl",
-                cmap=plt.cm.coolwarm):
-        """Plot the GP predictions with data overlayed."""
-        coordinates, mags, mag_errs, colors, condition_mask = self.get_gp_data(kind)
-
-        # Only show the data that were used for conditioning the GP.
-        use_coordinates = coordinates[condition_mask]
-        use_mags = mags[condition_mask]
-        use_colors = colors[condition_mask]
-
-        # Apply the color correction to the magnitudes.
-        if hyperparameters is None:
-            color_slope = self.gp_hyperparameters[0]
-        else:
-            color_slope = hyperparameters[0]
-
-        use_mags = use_mags - color_slope * use_colors
-
-        x = use_coordinates[:, axis_1]
-        y = use_coordinates[:, axis_2]
-
-        min_x = np.nanmin(x) - border
-        max_x = np.nanmax(x) + border
-        min_y = np.nanmin(y) - border
-        max_y = np.nanmax(y) + border
-
-        plot_x, plot_y = np.meshgrid(
-            np.linspace(min_x, max_x, num_points), np.linspace(min_y, max_y, num_points)
-        )
-
-        flat_plot_x = plot_x.flatten()
-        flat_plot_y = plot_y.flatten()
-
-        plot_coords = np.zeros((len(flat_plot_x), self.embedding.shape[1]))
-
-        plot_coords[:, axis_1] = flat_plot_x
-        plot_coords[:, axis_2] = flat_plot_y
-
-        pred = self.predict_gp(plot_coords, hyperparameters=hyperparameters, kind=kind)
-        pred = pred.reshape(plot_x.shape)
-
-        self.scatter(
-            mags,
-            mask=condition_mask,
-            label="Magnitude residuals",
-            axis_1=axis_1,
-            axis_2=axis_2,
-            vmin=vmin,
-            vmax=vmax,
-            cmap=cmap,
-            invert_colorbar=True,
-            edgecolors="k",
-            marker_size=marker_size,
-        )
-
-        plt.imshow(
-            pred[::-1],
-            extent=(min_x, max_x, min_y, max_y),
-            cmap=plt.cm.coolwarm.reversed(),
-            vmin=vmin,
-            vmax=vmax,
-            aspect="auto",
-        )
-
-        plt.tight_layout()
+        return manifold_gp
 
     def load_host_data(self):
         """Load host data from Rigault et al. 2019"""
@@ -1308,7 +1041,7 @@ class ManifoldTwinsAnalysis:
         return residuals, residual_uncertainties
 
     def calculate_salt_magnitude_residuals(self, mask=None, additional_covariates=[],
-                                        bootstrap=False, minimum_verbosity=2):
+                                           bootstrap=False, minimum_verbosity=2):
         """Calculate SALT2 magnitude residuals
 
         This follows the standard procedure of estimating the alpha and beta correction
@@ -1406,12 +1139,6 @@ class ManifoldTwinsAnalysis:
             residual_uncertainties**2 - intrinsic_dispersion**2
         )
 
-        # Save raw residuals without alpha and beta corrections applied.
-        raw_residuals, raw_residual_uncertainties = \
-            self._evaluate_salt_magnitude_residuals(
-                additional_covariates, intrinsic_dispersion, 0., 0., *fit_parameters[2:]
-            )
-
         result = {
             'mask': mask,
             'ref_mag': res.x[0],
@@ -1424,7 +1151,6 @@ class ManifoldTwinsAnalysis:
             'corr_mags': residuals,
             'corr_mag_uncertainties': residual_uncertainties,
             'corr_mag_raw_uncertainties': raw_uncertainties,
-            'corr_mags_raw': raw_residuals,
         }
 
         mv = {'minimum_verbosity': minimum_verbosity}
@@ -1477,9 +1203,8 @@ class ManifoldTwinsAnalysis:
 
         return reference, samples
 
-    def scatter(self, variable, mask=None, weak_mask=None, label="", axis_1=0,
-                axis_2=1, axis_3=None, marker_size=40, cmap=plt.cm.coolwarm,
-                invert_colorbar=False, **kwargs):
+    def scatter(self, variable, mask=None, weak_mask=None, label="", axis_1=0, axis_2=1,
+                axis_3=None, marker_size=40, invert_colorbar=False, **kwargs):
         """Make a scatter plot of some variable against the Isomap coefficients
 
         variable is the values to use for the color axis of the plot.
@@ -1504,6 +1229,8 @@ class ManifoldTwinsAnalysis:
         if mask is not None:
             use_embedding = use_embedding[mask]
             use_var = use_var[mask]
+
+        cmap = self.settings['colormap']
 
         if invert_colorbar:
             cmap = cmap.reversed()
@@ -1555,8 +1282,6 @@ class ManifoldTwinsAnalysis:
             ticks = cb.get_ticks()
             cb.ax.invert_yaxis()
             cb.set_ticks(ticks)
-
-        plt.tight_layout()
 
 
     def do_component_blondin_plot(self, axis_1=0, axis_2=1, marker_size=40):
