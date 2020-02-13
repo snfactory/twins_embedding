@@ -52,16 +52,17 @@ class ManifoldTwinsAnalysis:
         self.print_verbose("Calculating spectral indicators...")
         self.calculate_spectral_indicators()
 
-        self.print_verbose("Fitting GP hyperparameters...")
-        self.rbtl_gp = self.calculate_gp_magnitude_residuals()
+        self.print_verbose("Fitting RBTL GP to magnitude residuals...")
+        self.residuals_rbtl_gp = self.fit_gp_magnitude_residuals()
 
         self.print_verbose("Calculating SALT2 magnitude residuals...")
-        self.salt_magnitude_residuals = self.calculate_salt_magnitude_residuals(
-            minimum_verbosity=1
-        )
+        self.residuals_salt = self.fit_salt_magnitude_residuals()
 
         self.print_verbose("Loading host galaxy data...")
         self.load_host_data()
+
+        self.print_verbose("Loading peculiar SNe Ia data...")
+        self.load_peculiar_data()
 
         self.print_verbose("Done!")
 
@@ -620,8 +621,8 @@ class ManifoldTwinsAnalysis:
                 )
             elif kind == "salt":
                 # Use the standard SALT2 fit as a baseline.
-                mags = self.salt_magnitude_residuals['corr_mags']
-                mag_errs = self.salt_magnitude_residuals['corr_mag_raw_uncertainties']
+                mags = self.residuals_salt['residuals']
+                mag_errs = self.residuals_salt['raw_residual_uncertainties']
 
             colors = self.salt_colors
             condition_mask = (
@@ -641,8 +642,8 @@ class ManifoldTwinsAnalysis:
 
         return coordinates, mags, mag_errs, colors, condition_mask
 
-    def calculate_gp_magnitude_residuals(self, kind="rbtl", mask=None,
-                                         additional_covariates=[], verbosity=None):
+    def fit_gp_magnitude_residuals(self, kind="rbtl", mask=None,
+                                   additional_covariates=[], verbosity=None):
         """Calculate magnitude residuals using a GP over a given latent space."""
         if verbosity is None:
             verbosity = self.settings['verbosity']
@@ -683,7 +684,8 @@ class ManifoldTwinsAnalysis:
         """Load host data from Rigault et al. 2019"""
         host_data = Table.read(
             # "./data/host_properties_rigault_2019.txt", format="ascii"
-            "./data/host_properties_rigault_full.csv"
+            # "./data/host_properties_rigault_full.csv"
+            "./data/host_properties_rigault_valid.csv"
         )
         all_host_idx = []
         host_mask = []
@@ -711,6 +713,31 @@ class ManifoldTwinsAnalysis:
         fill_host_data = utils.fill_mask(host_data[all_host_idx].as_array(),
                                          self.host_mask)
         self.host_data = Table(fill_host_data, names=host_data.columns)
+
+    def load_peculiar_data(self):
+        """Load peculiar SNe Ia information from Lin. et al 2020"""
+        peculiar_data = Table.read("./data/peculiar_lin_2020.csv", format="ascii.csv")
+
+        all_peculiar_idx = []
+        peculiar_mask = []
+        for target in self.targets:
+            name = target.name
+
+            match = peculiar_data["name"] == name
+
+            # Check if found
+            if not np.any(match):
+                peculiar_mask.append(True)
+                continue
+
+            all_peculiar_idx.append(np.where(match)[0][0])
+            peculiar_mask.append(False)
+
+        # Save the loaded data
+        self.peculiar_mask = np.array(peculiar_mask)
+        fill_peculiar_data = utils.fill_mask(peculiar_data[all_peculiar_idx].as_array(),
+                                             ~self.peculiar_mask)
+        self.peculiar_data = Table(fill_peculiar_data, names=peculiar_data.columns)
 
     def plot_host_variable(self, variable, mask=None, mag_type="rbtl",
                            match_masks=False, threshold=None):
@@ -1040,8 +1067,8 @@ class ManifoldTwinsAnalysis:
 
         return residuals, residual_uncertainties
 
-    def calculate_salt_magnitude_residuals(self, mask=None, additional_covariates=[],
-                                           bootstrap=False, minimum_verbosity=2):
+    def fit_salt_magnitude_residuals(self, mask=None, additional_covariates=[],
+                                     bootstrap=False, verbosity=None):
         """Calculate SALT2 magnitude residuals
 
         This follows the standard procedure of estimating the alpha and beta correction
@@ -1049,9 +1076,14 @@ class ManifoldTwinsAnalysis:
         dispersion that sets the chi-square to 1. We repeat this procedure until the
         intrinsic dispersion converges.
         """
+        if verbosity is None:
+            verbosity = self.settings['verbosity']
+
         # Start with a complete mask if there wasn't a user specified one.
         if mask is None:
             mask = np.ones(len(self.salt_fits), dtype=bool)
+        else:
+            mask = mask.copy()
 
         # Reject bad SALT2 fits.
         mask &= self.salt_mask
@@ -1070,7 +1102,7 @@ class ManifoldTwinsAnalysis:
         # round to set chi2 = 1
         intrinsic_dispersion = 0.1
 
-        for i in range(5):
+        for i in range(10):
             def calc_dispersion(*fit_parameters):
                 residuals, residual_uncertainties = \
                     self._evaluate_salt_magnitude_residuals(additional_covariates,
@@ -1096,12 +1128,10 @@ class ManifoldTwinsAnalysis:
             res = minimize(to_min_fit_parameters, start_vals)
             fit_parameters = res.x
 
-            self.print_verbose(
-                f"Pass {i}, ref_mag={fit_parameters[0]:.3f}, "
-                f"alpha={fit_parameters[1]:.3f}, "
-                f"beta={fit_parameters[2]:.3f}",
-                minimum_verbosity=2
-            )
+            if verbosity >= 2:
+                print(f"Pass {i}, ref_mag={fit_parameters[0]:.3f}, "
+                      f"alpha={fit_parameters[1]:.3f}, "
+                      f"beta={fit_parameters[2]:.3f}")
 
             # Reestimate intrinsic dispersion.
             def chisq(intrinsic_dispersion):
@@ -1123,11 +1153,22 @@ class ManifoldTwinsAnalysis:
                 chi2 = chisq(x[0])
                 return (chi2 - 1)**2
 
-            res_int_disp = minimize(to_min_intrinsic_dispersion, [intrinsic_dispersion])
+            res_int_disp = minimize(
+                to_min_intrinsic_dispersion,
+                [intrinsic_dispersion],
+                bounds=[(0, None)],
+            )
 
+            old_intrinsic_dispersion = intrinsic_dispersion
             intrinsic_dispersion = res_int_disp.x[0]
-            self.print_verbose("  -> new intrinsic_dispersion=%.3f"
-                               % intrinsic_dispersion, minimum_verbosity=2)
+
+            if verbosity >= 2:
+                print("  -> new intrinsic_dispersion=%.3f" % intrinsic_dispersion)
+
+            if np.abs(intrinsic_dispersion - old_intrinsic_dispersion) < 1e-5:
+                break
+        else:
+            raise Exception("Intrinsic dispersion didn't converge!")
 
         # Calculate the SALT2 magnitude residuals.
         residuals, residual_uncertainties = self._evaluate_salt_magnitude_residuals(
@@ -1148,26 +1189,26 @@ class ManifoldTwinsAnalysis:
             'wrms': res.fun,
             'rms': np.std(residuals[mask]),
             'nmad': math.nmad(residuals[mask]),
-            'corr_mags': residuals,
-            'corr_mag_uncertainties': residual_uncertainties,
-            'corr_mag_raw_uncertainties': raw_uncertainties,
+            'residuals': residuals,
+            'residual_uncertainties': residual_uncertainties,
+            'raw_residual_uncertainties': raw_uncertainties,
         }
 
-        mv = {'minimum_verbosity': minimum_verbosity}
-
-        self.print_verbose("SALT2 magnitude residuals fit: ", **mv)
-        self.print_verbose(f"    ref_mag: {result['ref_mag']:.3f}", **mv)
-        self.print_verbose(f"    alpha:   {result['alpha']:.3f}", **mv)
-        self.print_verbose(f"    beta:    {result['beta']:.3f}", **mv)
-        self.print_verbose(f"    σ_int:   {result['intrinsic_dispersion']:.3f}", **mv)
-        self.print_verbose(f"    RMS:     {result['rms']:.3f}", **mv)
-        self.print_verbose(f"    NMAD:    {result['nmad']:.3f}", **mv)
-        self.print_verbose(f"    WRMS:    {result['wrms']:.3f}", **mv)
+        if verbosity >= 1:
+            print("SALT2 magnitude residuals fit: ")
+            print(f"    ref_mag: {result['ref_mag']:.3f}")
+            print(f"    alpha:   {result['alpha']:.3f}")
+            print(f"    beta:    {result['beta']:.3f}")
+            print(f"    σ_int:   {result['intrinsic_dispersion']:.3f}")
+            print(f"    RMS:     {result['rms']:.3f}")
+            print(f"    NMAD:    {result['nmad']:.3f}")
+            print(f"    WRMS:    {result['wrms']:.3f}")
 
         for i in range(len(additional_covariates)):
             covariate_amplitude = res.x[3 + i]
             result[f'covariate_amplitude_{i}'] = covariate_amplitude
-            self.print_verbose(f"    amp[{i}]:  {covariate_amplitude:.3f}", **mv)
+            if verbosity >= 1:
+                print(f"    amp[{i}]:  {covariate_amplitude:.3f}")
 
         return result
 
@@ -1190,13 +1231,14 @@ class ManifoldTwinsAnalysis:
             one row per bootstrap.
         """
         # Calculate reference result
-        reference = self.calculate_salt_magnitude_residuals(*args, **kwargs)
+        reference = self.fit_salt_magnitude_residuals(*args, verbosity=0, **kwargs)
 
         # Do bootstrapping
         samples = []
         for i in tqdm.tqdm(range(num_samples)):
             samples.append(
-                self.calculate_salt_magnitude_residuals(*args, bootstrap=True, **kwargs)
+                self.fit_salt_magnitude_residuals(*args, bootstrap=True, verbosity=0,
+                                                  **kwargs)
             )
 
         samples = Table(samples)
@@ -1204,7 +1246,7 @@ class ManifoldTwinsAnalysis:
         return reference, samples
 
     def scatter(self, variable, mask=None, weak_mask=None, label="", axis_1=0, axis_2=1,
-                axis_3=None, marker_size=40, invert_colorbar=False, **kwargs):
+                axis_3=None, marker_size=60, invert_colorbar=False, **kwargs):
         """Make a scatter plot of some variable against the Isomap coefficients
 
         variable is the values to use for the color axis of the plot.
@@ -1253,6 +1295,8 @@ class ManifoldTwinsAnalysis:
                 s=marker_size,
                 c=use_var,
                 cmap=cmap,
+                edgecolors='k',
+                linewidths=0.7,
                 **kwargs
             )
             ax.set_zlabel("Component %d" % axis_3)
@@ -1264,6 +1308,8 @@ class ManifoldTwinsAnalysis:
                 s=marker_size,
                 c=use_var,
                 cmap=cmap,
+                edgecolors='k',
+                linewidths=0.7,
                 **kwargs
             )
 

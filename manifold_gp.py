@@ -163,7 +163,17 @@ class ManifoldGaussianProcess():
         self.parameter_uncertainties = np.sqrt(np.diag(cov))
 
         # Calculate the residuals for out-of-sample predictions.
-        self.residuals = self.target_values - self.predict_out_of_sample()
+        predictions, prediction_uncertainties = self.predict_out_of_sample()
+        self.residuals = self.target_values - predictions
+        self.raw_residual_uncertainties = np.sqrt(
+            self.target_value_uncertainties**2
+            + prediction_uncertainties**2
+        )
+
+        self.residual_uncertainties = np.sqrt(
+            self.raw_residual_uncertainties**2
+            + self.parameter_dict['intrinsic_dispersion']**2
+        )
 
         if verbosity >= 1:
             print(f"GP magnitude residuals fit:")
@@ -182,7 +192,7 @@ class ManifoldGaussianProcess():
             print(f"    {'Fit std':25s} {std:.3f} mag")
 
     def predict(self, prediction_coordinates, prediction_covariates=None,
-                 parameters=None, condition_mask=None):
+                 parameters=None, condition_mask=None, return_uncertainties=True):
         """Predict a Gaussian Process on the given data."""
         if parameters is None:
             parameters = self.parameters
@@ -212,7 +222,12 @@ class ManifoldGaussianProcess():
             condition_residuals,
             np.atleast_2d(prediction_coordinates),
             return_cov=False,
+            return_var=return_uncertainties,
         )
+
+        if return_uncertainties:
+            predictions, prediction_variances = predictions
+            prediction_uncertainties = np.sqrt(prediction_variances)
 
         # Add in zeropoint offset
         predictions += offset
@@ -222,7 +237,10 @@ class ManifoldGaussianProcess():
             prediction_covariates = np.atleast_2d(prediction_covariates)
             predictions += prediction_covariates.T.dot(covariate_slopes)
 
-        return predictions
+        if return_uncertainties:
+            return predictions, prediction_uncertainties
+        else:
+            return predictions
 
     def predict_out_of_sample(self):
         """Do out-of-sample Gaussian Process predictions.
@@ -232,7 +250,8 @@ class ManifoldGaussianProcess():
         location. Predictions for the rest of the sample are done using the full
         conditioning sample.
         """
-        result = np.zeros(len(self.target_values))
+        predictions = np.zeros(len(self.target_values))
+        prediction_uncertainties = np.zeros(len(self.target_values))
 
         # Do out-of-sample predictions for data in the conditioning sample.
         locs = np.where(self.condition_mask)[0]
@@ -240,20 +259,25 @@ class ManifoldGaussianProcess():
             mask = np.zeros(len(self.target_values), dtype=bool)
             mask[loc] = True
 
-            prediction = self.predict(
+            prediction, prediction_uncertainty = self.predict(
                 self.coordinates[mask],
                 self.covariates[:, mask],
-                condition_mask = ~mask
+                condition_mask = ~mask,
+                return_uncertainties=True,
             )
 
-            result[mask] = prediction
+            predictions[mask] = prediction
+            prediction_uncertainties[mask] = prediction_uncertainty
 
-        result[~self.condition_mask] = self.predict(
+        other_predictions, other_prediction_uncertainties = self.predict(
             self.coordinates[~self.condition_mask],
             self.covariates[:, ~self.condition_mask],
         )
 
-        return result
+        predictions[~self.condition_mask] = other_predictions
+        prediction_uncertainties[~self.condition_mask] = other_prediction_uncertainties
+
+        return predictions, prediction_uncertainties
 
     def plot(self, axis_1=0, axis_2=1, num_points=200, border=0.1, vmin=-0.2, vmax=0.2,
              **kwargs):
@@ -288,7 +312,7 @@ class ManifoldGaussianProcess():
         plot_coords[:, axis_1] = flat_plot_x
         plot_coords[:, axis_2] = flat_plot_y
 
-        predictions = self.predict(plot_coords)
+        predictions = self.predict(plot_coords, return_uncertainties=False)
         predictions = predictions.reshape(plot_x.shape)
 
         # Subtract out the fitted offset.

@@ -4,7 +4,8 @@ from idrtools import math
 from matplotlib import pyplot as plt
 
 
-def fit_step(side_probabilities, residuals, uncertainties, mask):
+def fit_step(side_probabilities, residuals, uncertainties, mask, verbosity=1,
+             calculate_covariance=True):
     fit_side_probabilities = side_probabilities[mask]
     fit_residuals = residuals[mask]
     fit_uncertainties = uncertainties[mask]
@@ -32,52 +33,53 @@ def fit_step(side_probabilities, residuals, uncertainties, mask):
         bounds=bounds
     )
 
-    cov = math.calculate_covariance_finite_difference(
-        calc_likelihood,
-        ["offset_1", "offset_2", "dispersion_1", "dispersion_2"],
-        res.x,
-        bounds,
-        verbose=False
-    )
-    parameter_uncertainties = np.sqrt(np.diag(cov))
-
-    # Estimate the variances with the intrinsic components.
-    total_uncertainties = np.sqrt(
-        uncertainties**2
-        + (1 - side_probabilities) * res.x[2]**2
-        + side_probabilities * res.x[3]**2
-    )
-
-    # Calculate the step size and its uncertainty.
-    step_size = res.x[1] - res.x[0]
-    step_size_uncertainty = np.sqrt(cov[0, 0] + cov[1, 1] + 2.*cov[0, 1])
-
-    result = {
-        'fit_result': res.message,
-        'step_size': step_size,
-        'step_size_uncertainty': step_size_uncertainty,
-        'offset_1': res.x[0],
-        'offset_2': res.x[1],
-        'offset_1_uncertainty': parameter_uncertainties[0],
-        'offset_2_uncertainty': parameter_uncertainties[1],
-        'dispersion_1': res.x[2],
-        'dispersion_2': res.x[3],
-        'dispersion_1_uncertainty': parameter_uncertainties[2],
-        'dispersion_2_uncertainty': parameter_uncertainties[3],
-        'total_uncertainties': total_uncertainties,
-    }
-
     if not res['success']:
         raise Exception("Fit failed!")
 
-    print(
-        f"    Step: {result['step_size']:+.3f} ± "
-        f"{result['step_size_uncertainty']:.3f} mag, "
-        f"σ1: {result['dispersion_1']:.3f} ± "
-        f"{result['dispersion_1_uncertainty']:.3f} mag, "
-        f"σ2: {result['dispersion_2']:.3f} ± "
-        f"{result['dispersion_2_uncertainty']:.3f} mag"
-    )
+    parameter_names = ['offset_1', 'offset_2', 'dispersion_1', 'dispersion_2']
+
+    result = {
+        'fit_result': res.message,
+        'step_size': res.x[1] - res.x[0],
+    }
+
+    for parameter_name, value in zip(parameter_names, res.x):
+        result[parameter_name] = value
+
+    if calculate_covariance:
+        cov = math.calculate_covariance_finite_difference(
+            calc_likelihood,
+            ["offset_1", "offset_2", "dispersion_1", "dispersion_2"],
+            res.x,
+            bounds,
+            verbose=verbosity >= 3
+        )
+        parameter_uncertainties = np.sqrt(np.diag(cov))
+
+        # Estimate the variances with the intrinsic components.
+        total_uncertainties = np.sqrt(
+            uncertainties**2
+            + (1 - side_probabilities) * res.x[2]**2
+            + side_probabilities * res.x[3]**2
+        )
+        result['total_uncertainties'] = total_uncertainties
+
+        # Calculate the total uncertainty on the step size.
+        step_size_uncertainty = np.sqrt(cov[0, 0] + cov[1, 1] + 2.*cov[0, 1])
+        result['step_size_uncertainty'] = step_size_uncertainty
+
+        for name, uncertainty in zip(parameter_names, parameter_uncertainties):
+            result[name + '_uncertainty'] = uncertainty
+
+        if verbosity >= 1:
+            print(
+                f"    Step: {result['step_size']:+.3f} ± "
+                f"{result['step_size_uncertainty']:.3f} mag, "
+                f"σ1: {result['dispersion_1']:.3f} ± "
+                f"{result['dispersion_1_uncertainty']:.3f} mag, "
+                f"σ2: {result['dispersion_2']:.3f} ± "
+                f"{result['dispersion_2_uncertainty']:.3f} mag"
+            )
 
     return result
 
