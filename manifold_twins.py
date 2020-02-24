@@ -1517,3 +1517,33 @@ class ManifoldTwinsAnalysis:
 
         if label is not None:
             ax.legend()
+
+    def savefig(self, filename, figure=None, **kwargs):
+        """Save a matplotlib figure
+
+        Parameters
+        ----------
+        filename : str
+            The output filename. This will be placed in the directory specified by
+            self.settings['figure_directory']
+        figure : `matplotlib.pyplot.figure` instance or None
+            The matplotlib figure to save. If figure is None, then we get the current
+            figure from matplotlib and save that.
+        **kwargs
+            By default, the settings for savefig are taken from
+            self.settings["matplotlib_savefig_keywords"], but they can be overridden
+            for individual figures with kwargs.
+        """
+        if figure is None:
+            figure = plt.gcf()
+
+        directory = self.settings['figure_directory']
+        os.makedirs(directory, exist_ok=True)
+
+        path = os.path.join(directory, filename)
+
+        figure.savefig(
+            path,
+            **self.settings["matplotlib_savefig_keywords"],
+            **kwargs
+        )

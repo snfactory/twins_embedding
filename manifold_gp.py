@@ -80,7 +80,7 @@ class ManifoldGaussianProcess():
     def parameter_bounds(self):
         parameter_bounds = [
             (0., None),
-            (0., None),
+            (0., 10.),
             (0.1, None),
             (None, None),
         ]
@@ -159,6 +159,7 @@ class ManifoldGaussianProcess():
             self.parameter_bounds,
             verbose=verbosity >= 3,
         )
+
         self.parameter_covariance = cov
         self.parameter_uncertainties = np.sqrt(np.diag(cov))
 

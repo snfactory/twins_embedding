@@ -51,15 +51,24 @@ default_settings = {
     "isomap_num_components": 3,
 
     # Peculiar velocity (in km/s)
-    "peculiar_velocity": 360,
+    "peculiar_velocity": 300,
 
     # Figure parameters
+
+    # Directory to save figures to
+    "figure_directory": "./figures/",
 
     # Matplotlib settings for all figures.
     "matplotlib_settings": {
         "figure.figsize": (5., 4.),
         "figure.autolayout": True,
         "figure.max_open_warning": 1000,
+    },
+
+    # Keywords for saving matplotlib figures.
+    "matplotlib_savefig_keywords": {
+        "bbox_inches": "tight",
+        "pad_inches": 0.,
     },
 
     # Colormap to use
