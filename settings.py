@@ -4,7 +4,7 @@ from matplotlib import pyplot as plt
 
 default_settings = {
     # Is the analysis being blinded?
-    "blinded": True,
+    "blinded": False,
 
     # Location of the SNfactory dataset.
     "idr_directory": "/home/kyle/data/snfactory/idr/",

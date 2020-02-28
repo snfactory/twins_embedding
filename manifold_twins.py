@@ -559,14 +559,15 @@ class ManifoldTwinsAnalysis:
         all_indicators = []
 
         # Dummy table with the target name
-        target_table = table.Table({'name': [i.name for i in self.targets]})
+        target_table = table.Table({'name': [i.name for i in self.targets]},
+                                   masked=True)
         all_indicators.append(target_table)
 
         # Add in all of the different indicators that are available.
         all_indicators.append(self.load_isomap_indicators())
         all_indicators.append(self.load_salt_indicators())
         all_indicators.append(self.calculate_spectral_indicators())
-        all_indicators.append(self.calculate_nordin_colors())
+        all_indicators.append(self.load_nordin_colors())
         all_indicators.append(self.load_sugar_components())
         all_indicators.append(self.load_snemo_components())
         all_indicators.append(self.load_host_data())
@@ -639,33 +640,6 @@ class ManifoldTwinsAnalysis:
 
         return spectral_indicators
 
-    def calculate_nordin_colors(self):
-        """Calculate the colors from Nordin et al. 2018"""
-        # Nordin colors
-        nordin_bands = {
-            'uNi': (3300., 3510.),
-            'uTi': (3510., 3660.),
-            'uSi': (3660., 3760.),
-            'uCa': (3750., 3860.),
-        }
-
-        columns = []
-
-        for label, (wave_min, wave_max) in nordin_bands.items():
-            cut = (self.wave > wave_min) & (self.wave < wave_max)
-
-            values = -2.5*np.log10(np.sum(self.scale_flux[:, cut], axis=1) /
-                                   np.sum(self.mean_flux[cut]))
-
-            column = table.MaskedColumn(
-                data=values,
-                name=f'nordin_{label}',
-                mask=~self.uncertainty_mask,
-            )
-            columns.append(column)
-
-        return table.Table(columns)
-
     def _load_table(self, path, name_key):
         """Read a table from a given path and match it to our list of targets"""
         # Read the table
@@ -685,26 +659,37 @@ class ManifoldTwinsAnalysis:
             .replace('\r\n', '\n').encode('latin1')
         sugar_data = pickle.loads(pickle_data, encoding='latin1')
 
+        sugar_keys = ['q1', 'q2', 'q3', 'Av', 'grey']
+
         sugar_rows = []
         for target in self.targets:
             try:
                 row = sugar_data[target.name.encode('latin1')]
-                sugar_rows.append([row['q1'], row['q2'], row['q3']])
+                sugar_rows.append([row[i] for i in sugar_keys])
             except KeyError:
-                sugar_rows.append(np.ma.masked_array([np.nan] * 3, [1]*3))
+                sugar_rows.append(np.ma.masked_array([np.nan]*len(sugar_keys),
+                                                     [1]*len(sugar_keys)))
 
         sugar_components = table.Table(
             rows=sugar_rows,
-            names=['sugar_q1', 'sugar_q2', 'sugar_q3'],
+            names=[f'sugar_{i}' for i in sugar_keys],
         )
 
         return sugar_components
+
+    def load_nordin_colors(self):
+        """Load the U-band colors from Nordin et al. 2018"""
+        nordin_table = self._load_table('./data/nordin_2018_colors.csv', 'name')
+
+        for colname in nordin_table.colnames:
+            nordin_table.rename_column(colname, f'nordin_{colname}')
+
+        return nordin_table
 
     def load_snemo_components(self):
         """Load the SNEMO components from Saunders et al. 2018"""
         snemo_table = self._load_table('./data/snemo_salt_coefficients_snf.csv', 'SN')
 
-        # Drop columns that aren't SNEMO parameters and add desriptions for the others.
         for colname in snemo_table.colnames:
             if 'snemo' not in colname:
                 snemo_table.rename_column(colname, f'snemo_{colname}')
@@ -741,9 +726,125 @@ class ManifoldTwinsAnalysis:
         peculiar_table = table.Table({
             'peculiar_type': peculiar_type,
             'peculiar_reference': peculiar_reference,
-        })
+        }, masked=True)
 
         return peculiar_table
+
+    def find_best_transformation(self, target_indicator,
+                                 quadratic_reference_indicators=[],
+                                 linear_reference_indicators=[], mask=True,
+                                 shuffle=False):
+        """Find the best transformation of a set of indicators to reproduce a different
+        indicator.
+
+        The indicators can be either keys corresponding to columns in the
+        self.indicators table or arrays of values directly. Masks will automatically be
+        extracted if the indicators are `MaskedColumn` or `numpy.ma.masked_array`
+        instances. A mask can also be explicitly passed to this function which will be
+        used in addition to any extracted masks.
+
+        Parameters
+        ----------
+        target_indicator : str or array
+            The indicator to attempt to reproduce.
+        quadratic_reference_indicators : list of strs or arrays, optional
+            Indicators to transform, with up to quadratic terms (including cross-terms)
+            allowed in each of these indicators.
+        linear_reference_indicators : list of strs or arrays, optional
+            Indicators to transform, with only linear terms allowed in each of these
+            indicators.
+        mask : array of bools, optional
+            A mask to apply (in addition to ones extracted from the indicators).
+        shuffle : bool, optional
+            If True, shuffle the reference indicators randomly before doing the
+            transformation. This can be used to determine the significance of any
+            relations. (default False)
+
+        Returns
+        -------
+        explained_variance : float
+            Fraction of variance that is explained by the tranformation.
+        coefficients : array
+            Coefficients of the transformation.
+        best_transformation : array
+            Transformation of the reference values that best matches the target values.
+        mask : array
+            Mask that was used for the transformation
+        """
+        def parse_column(col):
+            if isinstance(col, str):
+                return self.indicators[col]
+            else:
+                return col
+
+        quad_ref_columns = [parse_column(i) for i in quadratic_reference_indicators]
+        lin_ref_columns = [parse_column(i) for i in linear_reference_indicators]
+        target_column = parse_column(target_indicator)
+
+        # Build the mask taking masked columns into account if applicable.
+        for column in quad_ref_columns + lin_ref_columns + [target_column]:
+            try:
+                mask &= ~column.mask
+            except AttributeError:
+                continue
+
+        # Get basic numpy arrays for everything and apply the masks. This has a
+        # surprisingly large effect on performance.
+        quad_ref_values = [np.asarray(i)[mask] for i in quad_ref_columns]
+        lin_ref_values = [np.asarray(i)[mask] for i in lin_ref_columns]
+        target_values = np.asarray(target_column)[mask]
+
+        if shuffle:
+            # Reorder the references randomly
+            order = np.random.permutation(np.arange(len(target_values)))
+            quad_ref_values = [i[order] for i in quad_ref_values]
+            lin_ref_values = [i[order] for i in lin_ref_values]
+
+        num_linear_terms = len(quad_ref_values) + len(lin_ref_values)
+        num_quadratic_terms = (len(quad_ref_values) + 1) * len(quad_ref_values) // 2
+
+        num_terms = 1 + num_linear_terms + num_quadratic_terms
+
+        def evaluate(x):
+            zeropoint = x[0]
+            linear_coeffs = x[1:num_linear_terms+1]
+            quadratic_coeffs = x[num_linear_terms+1:]
+
+            # Start the model with the zeropoint
+            model = zeropoint
+
+            # Linear terms. Note that the quadratic terms also have a linear one.
+            lin_idx = 0
+            for val in lin_ref_values:
+                model += linear_coeffs[lin_idx] * val
+                lin_idx += 1
+            for val in quad_ref_values:
+                model += linear_coeffs[lin_idx] * val
+                lin_idx += 1
+
+            # Quadratic terms.
+            quad_idx = 0
+            for i, val1 in enumerate(quad_ref_values):
+                for j, val2 in enumerate(quad_ref_values):
+                    if i > j:
+                        continue
+                    model += quadratic_coeffs[quad_idx] * val1 * val2
+                    quad_idx += 1
+
+            return model
+
+        norm = 1. / len(target_values) / np.var(target_values)
+
+        def calc_unexplained_variance(x):
+            model = evaluate(x)
+            diff = target_values - model
+            return np.sum(diff**2) * norm
+
+        res = minimize(calc_unexplained_variance, [0] * num_terms)
+        best_guess = utils.fill_mask(evaluate(res.x), mask)
+        explained_variance = 1 - calc_unexplained_variance(res.x)
+
+        return explained_variance, res.x, best_guess, mask
 
     def calculate_peculiar_velocity_uncertainties(self, redshifts):
         """Calculate dispersion added to the magnitude due to host galaxy
