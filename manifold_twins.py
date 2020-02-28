@@ -1,15 +1,16 @@
-from astropy.table import Table
+from astropy import table
 from hashlib import md5
 from idrtools import Dataset, math
 from matplotlib import pyplot as plt
-from matplotlib.gridspec import GridSpec
 from matplotlib.colors import ListedColormap
+from matplotlib.gridspec import GridSpec
 from mpl_toolkits.mplot3d import Axes3D
 from scipy.optimize import minimize
 from sklearn.manifold import Isomap
 import extinction
 import numpy as np
 import os
+import pickle
 import sys
 import tqdm
 
@@ -51,20 +52,14 @@ class ManifoldTwinsAnalysis:
         self.print_verbose("Generating the manifold learning embedding...")
         self.embedding = self.generate_embedding()
 
-        self.print_verbose("Calculating spectral indicators...")
-        self.calculate_spectral_indicators()
+        self.print_verbose("Loading other indicators of diversity...")
+        self.load_indicators()
 
         self.print_verbose("Fitting RBTL GP to magnitude residuals...")
         self.residuals_rbtl_gp = self.fit_gp_magnitude_residuals()
 
         self.print_verbose("Calculating SALT2 magnitude residuals...")
         self.residuals_salt = self.fit_salt_magnitude_residuals()
-
-        self.print_verbose("Loading host galaxy data...")
-        self.load_host_data()
-
-        self.print_verbose("Loading peculiar SNe Ia data...")
-        self.load_peculiar_data()
 
         self.print_verbose("Done!")
 
@@ -173,7 +168,7 @@ class ManifoldTwinsAnalysis:
         )
 
         # Pull out SALT fit info
-        self.salt_fits = Table([i.salt_fit for i in self.targets])
+        self.salt_fits = table.Table([i.salt_fit for i in self.targets])
         self.salt_x1 = self.salt_fits['x1'].data
         self.salt_colors = self.salt_fits['c'].data
         self.salt_phases = np.array([i.phase for i in self.spectra])
@@ -559,39 +554,196 @@ class ManifoldTwinsAnalysis:
 
         return embedding
 
+    def load_indicators(self):
+        """Calculate/load a range of different indicators of intrinsic diversity"""
+        all_indicators = []
+
+        # Dummy table with the target name
+        target_table = table.Table({'name': [i.name for i in self.targets]})
+        all_indicators.append(target_table)
+
+        # Add in all of the different indicators that are available.
+        all_indicators.append(self.load_isomap_indicators())
+        all_indicators.append(self.load_salt_indicators())
+        all_indicators.append(self.calculate_spectral_indicators())
+        all_indicators.append(self.calculate_nordin_colors())
+        all_indicators.append(self.load_sugar_components())
+        all_indicators.append(self.load_snemo_components())
+        all_indicators.append(self.load_host_data())
+        all_indicators.append(self.load_peculiar_data())
+
+        all_indicators = table.hstack(all_indicators)
+
+        self.indicators = all_indicators
+
+    def load_isomap_indicators(self):
+        """Extract Isomap indicators"""
+        columns = []
+        for i in range(self.settings['isomap_num_components']):
+            columns.append(table.MaskedColumn(
+                self.embedding[:, i],
+                name=f'isomap_c{i+1}',
+                mask=~self.uncertainty_mask,
+            ))
+
+        return table.Table(columns)
+
+    def load_salt_indicators(self):
+        """Extract SALT2.4 indicators from the fits"""
+        salt_indicators = table.Table(self.salt_fits[['c', 'x1']], masked=True)
+        salt_indicators['c'].name = 'salt_c'
+        salt_indicators['x1'].name = 'salt_x1'
+        salt_indicators['salt_c'].mask = ~self.salt_mask
+        salt_indicators['salt_x1'].mask = ~self.salt_mask
+
+        return salt_indicators
+
     def calculate_spectral_indicators(self):
         """Calculate spectral indicators for all of the features"""
-        all_indicators = []
+        spectral_indicators = []
 
         for idx in range(len(self.scale_flux)):
             spec = specind.Spectrum(
                 self.wave, self.scale_flux[idx], self.scale_fluxerr[idx]**2
             )
             indicators = spec.get_spin_dict()
-            all_indicators.append(indicators)
+            spectral_indicators.append(indicators)
 
-        all_indicators = Table(all_indicators)
+        spectral_indicators = table.Table(spectral_indicators, masked=True)
 
         # Figure out Branch classifications
-        all_si6355 = all_indicators["EWSiII6355"]
-        all_si5972 = all_indicators["EWSiII5972"]
+        all_si6355 = spectral_indicators["EWSiII6355"]
+        all_si5972 = spectral_indicators["EWSiII5972"]
 
-        branch_labels = []
+        branch_classifications = []
         branch_plot_colors = []
 
         for si6355, si5972 in zip(all_si6355, all_si5972):
             if si5972 >= 30:
-                branch_labels.append("Cool")
+                branch_classifications.append("Cool")
             elif (si5972 < 30) & (si6355 < 70):
-                branch_labels.append("Shallow Silicon")
+                branch_classifications.append("Shallow Silicon")
             elif (si5972 < 30) & (si6355 >= 70) & (si6355 < 100):
-                branch_labels.append("Core Normal")
+                branch_classifications.append("Core Normal")
             elif (si5972 < 30) & (si6355 >= 100):
-                branch_labels.append("Broad Line")
+                branch_classifications.append("Broad Line")
 
-        all_indicators['branch_label'] = branch_labels
+        spectral_indicators['branch_classification'] = branch_classifications
 
-        self.spectral_indicators = all_indicators
+        for colname in spectral_indicators.colnames:
+            # Mask out indicators that we shouldn't be using.
+            spectral_indicators[colname].mask = ~self.uncertainty_mask
+
+            if 'branch' not in colname:
+                spectral_indicators.rename_column(colname, f'spectrum_{colname}')
+
+        return spectral_indicators
+
+    def calculate_nordin_colors(self):
+        """Calculate the colors from Nordin et al. 2018"""
+        # Nordin colors
+        nordin_bands = {
+            'uNi': (3300., 3510.),
+            'uTi': (3510., 3660.),
+            'uSi': (3660., 3760.),
+            'uCa': (3750., 3860.),
+        }
+
+        columns = []
+
+        for label, (wave_min, wave_max) in nordin_bands.items():
+            cut = (self.wave > wave_min) & (self.wave < wave_max)
+
+            values = -2.5*np.log10(np.sum(self.scale_flux[:, cut], axis=1) /
+                                   np.sum(self.mean_flux[cut]))
+
+            column = table.MaskedColumn(
+                data=values,
+                name=f'nordin_{label}',
+                mask=~self.uncertainty_mask,
+            )
+            columns.append(column)
+
+        return table.Table(columns)
+
+    def _load_table(self, path, name_key):
+        """Read a table from a given path and match it to our list of targets"""
+        # Read the table
+        data = table.Table.read(path)
+
+        # Make a dummy table with the names of each of our SNe~Ia
+        name_table = table.Table({name_key: [i.name for i in self.targets]})
+
+        # Join the tables
+        ordered_table = table.join(name_table, data, join_type='left')
+
+        return ordered_table
+
+    def load_sugar_components(self):
+        """Load the SUGAR components from Leget et al. 2019"""
+        pickle_data = open('./data/sugar_parameters.pkl').read() \
+            .replace('\r\n', '\n').encode('latin1')
+        sugar_data = pickle.loads(pickle_data, encoding='latin1')
+
+        sugar_rows = []
+        for target in self.targets:
+            try:
+                row = sugar_data[target.name.encode('latin1')]
+                sugar_rows.append([row['q1'], row['q2'], row['q3']])
+            except KeyError:
+                sugar_rows.append(np.ma.masked_array([np.nan] * 3, [1]*3))
+
+        sugar_components = table.Table(
+            rows=sugar_rows,
+            names=['sugar_q1', 'sugar_q2', 'sugar_q3'],
+        )
+
+        return sugar_components
+
+    def load_snemo_components(self):
+        """Load the SNEMO components from Saunders et al. 2018"""
+        snemo_table = self._load_table('./data/snemo_salt_coefficients_snf.csv', 'SN')
+
+        # Drop columns that aren't SNEMO parameters and add desriptions for the others.
+        for colname in snemo_table.colnames:
+            if 'snemo' not in colname:
+                snemo_table.rename_column(colname, f'snemo_{colname}')
+                continue
+
+        return snemo_table
+
+    def load_host_data(self):
+        """Load host data from Rigault et al. 2019"""
+        host_data = self._load_table('./data/host_properties_rigault_valid.csv', 'name')
+
+        # Note: This list is from private communication and has the same names as our
+        # dataset. The data table in Rigault et al. 2019 uses IAU names which can be
+        # converted using self.iau_name_map.get(name, name)
+        for original_colname in host_data.colnames:
+            colname = original_colname
+
+            if 'host' not in colname:
+                colname = f'host_{colname}'
+
+            colname = colname.replace('.', '_')
+
+            host_data.rename_column(original_colname, colname)
+
+        return host_data
+
+    def load_peculiar_data(self):
+        """Load peculiar SNe Ia information from Lin. et al 2020"""
+        raw_peculiar_data = self._load_table('./data/peculiar_lin_2020.csv', 'name')
+
+        peculiar_type = raw_peculiar_data['kind'].filled('Normal')
+        peculiar_reference = raw_peculiar_data['reference'].filled('')
+
+        peculiar_table = table.Table({
+            'peculiar_type': peculiar_type,
+            'peculiar_reference': peculiar_reference,
+        })
+
+        return peculiar_table
 
     def calculate_peculiar_velocity_uncertainties(self, redshifts):
         """Calculate dispersion added to the magnitude due to host galaxy
@@ -706,73 +858,6 @@ class ManifoldTwinsAnalysis:
         manifold_gp.fit(verbosity=verbosity)
 
         return manifold_gp
-
-    def load_host_data(self):
-        """Load host data from Rigault et al. 2019"""
-        host_data = Table.read(
-            # "./data/host_properties_rigault_2019.txt", format="ascii"
-            # "./data/host_properties_rigault_full.csv"
-            "./data/host_properties_rigault_valid.csv"
-        )
-        all_host_idx = []
-        host_mask = []
-        for target in self.targets:
-            name = target.name
-
-            # Note: not applicable if we are using the full list from private
-            # communication.
-            # Rigault et al. 2019 uses IAU names, so convert our names if appropriate.
-            # name = self.iau_name_map.get(name, name)
-
-            match = host_data["name"] == name
-
-            # Check if found
-            if not np.any(match):
-                host_mask.append(False)
-                continue
-
-            # row = host_data[match][0]
-            all_host_idx.append(np.where(match)[0][0])
-            host_mask.append(True)
-
-        # Save the loaded data
-        self.host_mask = np.array(host_mask)
-        fill_host_data = utils.fill_mask(host_data[all_host_idx].as_array(),
-                                         self.host_mask)
-        self.host_data = Table(fill_host_data, names=host_data.columns)
-
-    def load_peculiar_data(self):
-        """Load peculiar SNe Ia information from Lin. et al 2020"""
-        peculiar_data = Table.read("./data/peculiar_lin_2020.csv", format="ascii.csv")
-
-        all_peculiar_idx = []
-        peculiar_mask = []
-        for target in self.targets:
-            name = target.name
-
-            match = peculiar_data["name"] == name
-
-            # Check if found
-            if not np.any(match):
-                peculiar_mask.append(True)
-                continue
-
-            all_peculiar_idx.append(np.where(match)[0][0])
-            peculiar_mask.append(False)
-
-        # Save the loaded data
-        self.peculiar_mask = np.array(peculiar_mask)
-        fill_peculiar_data = utils.fill_mask(peculiar_data[all_peculiar_idx].as_array(),
-                                             ~self.peculiar_mask)
-
-        peculiar_data = Table(fill_peculiar_data, names=peculiar_data.columns)
-
-        # Fill in the data for normal SNe~Ia.
-        peculiar_data = peculiar_data[['kind', 'reference']]
-        peculiar_data['kind'][self.peculiar_mask] = 'Normal'
-        peculiar_data['reference'][self.peculiar_mask] = ''
-
-        self.peculiar_data = peculiar_data
 
     def _evaluate_salt_magnitude_residuals(self, additional_covariates,
                                            intrinsic_dispersion, ref_mag, alpha, beta,
@@ -1017,7 +1102,7 @@ class ManifoldTwinsAnalysis:
                                                   **kwargs)
             )
 
-        samples = Table(samples)
+        samples = table.Table(samples)
 
         return reference, samples
 
