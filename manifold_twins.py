@@ -1226,6 +1226,13 @@ class ManifoldTwinsAnalysis:
             # Variable marker size
             marker_size = 10 + (marker_size - 10) * weak_mask[mask]
 
+        plot_kwargs = {
+            's': marker_size,
+            'edgecolors': 'gray',
+            'cmap': cmap,
+        }
+        plot_kwargs.update(kwargs)
+
         fig = plt.figure()
 
         if use_embedding.shape[1] >= 3 and axis_3 is not None:
@@ -1234,12 +1241,8 @@ class ManifoldTwinsAnalysis:
                 use_embedding[:, axis_1],
                 use_embedding[:, axis_2],
                 use_embedding[:, axis_3],
-                s=marker_size,
                 c=use_var,
-                cmap=cmap,
-                edgecolors='k',
-                linewidths=0.7,
-                **kwargs
+                **plot_kwargs
             )
             ax.set_zlabel("Component %d" % axis_3)
         else:
@@ -1247,12 +1250,8 @@ class ManifoldTwinsAnalysis:
             plot = ax.scatter(
                 use_embedding[:, axis_1],
                 use_embedding[:, axis_2],
-                s=marker_size,
                 c=use_var,
-                cmap=cmap,
-                edgecolors='k',
-                linewidths=0.7,
-                **kwargs
+                **plot_kwargs
             )
 
         ax.set_xlabel("Component %d" % (axis_1 + 1))
@@ -1311,6 +1310,10 @@ class ManifoldTwinsAnalysis:
                                                                      vmax=vmax))
             sm._A = []
 
+            c12 = sm.to_rgba(c12)
+            c13 = sm.to_rgba(c13)
+            c32 = sm.to_rgba(c32)
+
         min_1 = np.min(self.embedding[:, axis_1])
         max_1 = np.max(self.embedding[:, axis_1])
         min_2 = np.min(self.embedding[:, axis_2])
@@ -1341,7 +1344,6 @@ class ManifoldTwinsAnalysis:
             width_ratios = [range_1, range_3]
         else:
             # Add axes for a colorbar
-            # blank_frac = 0.025
             colorbar_frac = 0.025
 
             plot_width = 1 - colorbar_frac# - blank_frac
@@ -1349,7 +1351,7 @@ class ManifoldTwinsAnalysis:
             width_3 = plot_width * range_3 / (range_1 + range_3)
 
             ncols = 3
-            width_ratios = [width_1, width_3, colorbar_frac]#blank_frac, colorbar_frac]
+            width_ratios = [width_1, width_3, colorbar_frac]
 
         # Set the figure width. The height will be adjusted automatically to produce the
         # right aspect ratio.
@@ -1377,8 +1379,11 @@ class ManifoldTwinsAnalysis:
         plot_kwargs = {
             's': self.settings['scatter_plot_marker_size'],
             'edgecolors': 'gray',
-            'cmap': cmap,
         }
+
+        if discrete_color_map:
+            plot_kwargs['cmap'] = cmap
+
         plot_kwargs.update(kwargs)
 
         scatter = ax12.scatter(
