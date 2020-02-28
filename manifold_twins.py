@@ -551,6 +551,12 @@ class ManifoldTwinsAnalysis:
         embedding[good_mask] = ref_embedding
         embedding[~good_mask] = other_embedding
 
+        # The signs of the embedding are arbitrary... flip the sign of some of them to
+        # make them match up with well-known indicators in the literature.
+        for component in self.settings['isomap_flip_components']:
+            if num_components > component:
+                embedding[:, component] *= -1
+
         return embedding
 
     def calculate_spectral_indicators(self):

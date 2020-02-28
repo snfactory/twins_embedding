@@ -50,6 +50,10 @@ default_settings = {
     "isomap_num_neighbors": 10,
     "isomap_num_components": 3,
 
+    # The signs of Isomap components are arbitrary. Choose to flip some ofthem so that
+    # they match up nicely with previously established observables.
+    "isomap_flip_components": [1],
+
     # Peculiar velocity (in km/s)
     "peculiar_velocity": 300,
 
