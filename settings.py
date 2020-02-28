@@ -78,8 +78,6 @@ default_settings = {
 
     # Scatter plot properties
     "scatter_plot_marker_size": 70.,
-    "combined_scatter_plot_wspace": 0.01,
-    "combined_scatter_plot_hspace": 0.01,
 
     # Choose how to plot spectra. Options are "f_nu" or "f_lambda". In this analysis, we
     # do everything in F_lambda, but plots of SNe Ia look a lot better in F_nu because
