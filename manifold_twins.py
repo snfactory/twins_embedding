@@ -2,6 +2,8 @@ from astropy.table import Table
 from hashlib import md5
 from idrtools import Dataset, math
 from matplotlib import pyplot as plt
+from matplotlib.gridspec import GridSpec
+from matplotlib.colors import ListedColormap
 from mpl_toolkits.mplot3d import Axes3D
 from scipy.optimize import minimize
 from sklearn.manifold import Isomap
@@ -564,6 +566,25 @@ class ManifoldTwinsAnalysis:
 
         all_indicators = Table(all_indicators)
 
+        # Figure out Branch classifications
+        all_si6355 = all_indicators["EWSiII6355"]
+        all_si5972 = all_indicators["EWSiII5972"]
+
+        branch_labels = []
+        branch_plot_colors = []
+
+        for si6355, si5972 in zip(all_si6355, all_si5972):
+            if si5972 >= 30:
+                branch_labels.append("Cool")
+            elif (si5972 < 30) & (si6355 < 70):
+                branch_labels.append("Shallow Silicon")
+            elif (si5972 < 30) & (si6355 >= 70) & (si6355 < 100):
+                branch_labels.append("Core Normal")
+            elif (si5972 < 30) & (si6355 >= 100):
+                branch_labels.append("Broad Line")
+
+        all_indicators['branch_label'] = branch_labels
+
         self.spectral_indicators = all_indicators
 
     def calculate_peculiar_velocity_uncertainties(self, redshifts):
@@ -737,7 +758,15 @@ class ManifoldTwinsAnalysis:
         self.peculiar_mask = np.array(peculiar_mask)
         fill_peculiar_data = utils.fill_mask(peculiar_data[all_peculiar_idx].as_array(),
                                              ~self.peculiar_mask)
-        self.peculiar_data = Table(fill_peculiar_data, names=peculiar_data.columns)
+
+        peculiar_data = Table(fill_peculiar_data, names=peculiar_data.columns)
+
+        # Fill in the data for normal SNe~Ia.
+        peculiar_data = peculiar_data[['kind', 'reference']]
+        peculiar_data['kind'][self.peculiar_mask] = 'Normal'
+        peculiar_data['reference'][self.peculiar_mask] = ''
+
+        self.peculiar_data = peculiar_data
 
     def plot_host_variable(self, variable, mask=None, mag_type="rbtl",
                            match_masks=False, threshold=None):
@@ -827,8 +856,6 @@ class ManifoldTwinsAnalysis:
         plt.xlabel(variable)
         plt.ylabel("Isomap parameter 0")
 
-        plt.tight_layout()
-
     def plot_host(self, threshold=None, mask=None):
         """Make an interactive plot of host properties"""
         from ipywidgets import interact, fixed
@@ -862,95 +889,11 @@ class ManifoldTwinsAnalysis:
         plt.xlabel("Twins distance")
         plt.ylabel("Scaled transformed distance")
 
-    def plot_twin_distances(self, twins_percentile=10, figsize=None):
-        """Plot a histogram of where twins show up in the transformed
-        embedding.
-        """
-        from IPython.display import display
-        from scipy.spatial.distance import pdist
-        from scipy.stats import percentileofscore
-        import pandas as pd
-
-        mask = self.uncertainty_mask
-
-        spec_dists = pdist(self.fractional_differences[mask])
-        embedding_dists = pdist(self.embedding[mask])
-
-        splits = {
-            "Best 10% of twinness": (0, 10),
-            "10-20%": (10, 20),
-            "20-50%": (20, 50),
-            "Worst 50% of twinness": (50, 100),
-        }
-
-        # Set weight so that the histogram is 1 if we have every element in
-        # that bin.
-        weight = 100 / len(embedding_dists)
-
-        all_percentiles = []
-        all_weights = []
-
-        all_spec_cuts = []
-        all_embedding_cuts = []
-
-        for label, (min_percentile, max_percentile) in splits.items():
-            spec_cut = (spec_dists >= np.percentile(spec_dists, min_percentile)) & (
-                spec_dists < np.percentile(spec_dists, max_percentile)
-            )
-            embedding_cut = (embedding_dists >= np.percentile(embedding_dists, min_percentile)) & (
-                embedding_dists < np.percentile(embedding_dists, max_percentile)
-            )
-            percentiles = []
-            for dist in embedding_dists[spec_cut]:
-                percentiles.append(percentileofscore(embedding_dists, dist))
-            percentiles = np.array(percentiles)
-            weights = np.ones(len(percentiles)) * weight
-
-            all_percentiles.append(percentiles)
-            all_weights.append(weights)
-            all_spec_cuts.append(spec_cut)
-            all_embedding_cuts.append(embedding_cut)
-
-        plt.figure(figsize=figsize)
-        plt.hist(
-            all_percentiles,
-            100,
-            (0, 100),
-            weights=all_weights,
-            histtype="barstacked",
-            label=splits.keys(),
-        )
-        plt.xlabel("Recovered twinness percentile in the embedded space")
-        plt.ylabel("Fraction in bin")
-        plt.legend()
-
-        plt.xlim(0, 100)
-        plt.ylim(0, 1)
-
-        for label, (min_percentile, max_percentile) in splits.items():
-            plt.axvline(max_percentile, c="k", lw=2, ls="--")
-
-        # Build leakage matrix.
-        leakage_matrix = np.zeros((len(splits), len(splits)))
-        for idx_1, label_1 in enumerate(splits.keys()):
-            for idx_2, label_2 in enumerate(splits.keys()):
-                spec_cut = all_spec_cuts[idx_1]
-                embedding_cut = all_embedding_cuts[idx_2]
-                leakage = np.sum(embedding_cut & spec_cut) / np.sum(spec_cut)
-                leakage_matrix[idx_1, idx_2] = leakage
-
-        # Print the leakage matrix using pandas
-        df = pd.DataFrame(
-            leakage_matrix,
-            index=["From %s" % i for i in splits.keys()],
-            columns=["To %s" % i for i in splits.keys()],
-        )
-        display(df)
-
-        return leakage_matrix
-
     def plot_twin_pairings(self, mask=None, show_nmad=False):
-        """Plot the twins delta M as a function of twinness ala Fakhouri"""
+        """Plot the twins delta M as a function of twinness ala Fakhouri
+
+        TODO: Move this into a notebook.
+        """
         from scipy.spatial.distance import pdist
         from scipy.stats import percentileofscore
 
@@ -1245,8 +1188,8 @@ class ManifoldTwinsAnalysis:
 
         return reference, samples
 
-    def scatter(self, variable, mask=None, weak_mask=None, label="", axis_1=0, axis_2=1,
-                axis_3=None, marker_size=60, invert_colorbar=False, **kwargs):
+    def scatter(self, variable, mask=None, weak_mask=None, label=None, axis_1=0,
+                axis_2=1, axis_3=None, invert_colorbar=False, **kwargs):
         """Make a scatter plot of some variable against the Isomap coefficients
 
         variable is the values to use for the color axis of the plot.
@@ -1277,10 +1220,9 @@ class ManifoldTwinsAnalysis:
         if invert_colorbar:
             cmap = cmap.reversed()
 
-        if weak_mask is None:
-            # Constant marker size
-            marker_size = marker_size
-        else:
+        marker_size = self.settings['scatter_plot_marker_size']
+
+        if weak_mask is not None:
             # Variable marker size
             marker_size = 10 + (marker_size - 10) * weak_mask[mask]
 
@@ -1329,6 +1271,184 @@ class ManifoldTwinsAnalysis:
             cb.ax.invert_yaxis()
             cb.set_ticks(ticks)
 
+    def scatter_combined(self, variable, mask=None, label=None, axis_1=0, axis_2=1,
+                         axis_3=2, vmin=None, vmax=None, discrete_color_map=None,
+                         invert_colorbar=False, wspace=0., hspace=0., **kwargs):
+        """Scatter plot that shows three components simultaneously while preserving
+        aspect ratios.
+
+        The height of the figure will be adjusted automatically to produce the right
+        aspect ratio.
+        """
+        use_embedding = self.embedding
+
+        if np.ndim(variable) == 2:
+            c12 = variable[0]
+            c13 = variable[1]
+            c32 = variable[2]
+        else:
+            c12 = c13 = c32 = variable
+
+        if mask is not None:
+            use_embedding = use_embedding[mask]
+            c12 = c12[mask]
+            c13 = c13[mask]
+            c32 = c32[mask]
+
+        if discrete_color_map is not None:
+            cmap = ListedColormap(discrete_color_map.values())
+            color_id_map = {j:i for i, j in enumerate(discrete_color_map)}
+            c12 = [color_id_map[i] for i in c12]
+            c13 = [color_id_map[i] for i in c13]
+            c32 = [color_id_map[i] for i in c32]
+        else:
+            cmap = self.settings['colormap']
+
+            if invert_colorbar:
+                cmap = cmap.reversed()
+
+            sm = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(vmin=vmin,
+                                                                     vmax=vmax))
+            sm._A = []
+
+        min_1 = np.min(self.embedding[:, axis_1])
+        max_1 = np.max(self.embedding[:, axis_1])
+        min_2 = np.min(self.embedding[:, axis_2])
+        max_2 = np.max(self.embedding[:, axis_2])
+        min_3 = np.min(self.embedding[:, axis_3])
+        max_3 = np.max(self.embedding[:, axis_3])
+
+        range_1 = max_1 - min_1
+        range_2 = max_2 - min_2
+        range_3 = max_3 - min_3
+
+        border = 0.1
+
+        min_1 -= border * range_1
+        max_1 += border * range_1
+        min_2 -= border * range_2
+        max_2 += border * range_2
+        min_3 -= border * range_3
+        max_3 += border * range_3
+
+        range_1 *= (1 + 2. * border)
+        range_2 *= (1 + 2. * border)
+        range_3 *= (1 + 2. * border)
+
+        if discrete_color_map:
+            # Don't show a colorbar
+            ncols = 2
+            width_ratios = [range_1, range_3]
+        else:
+            # Add axes for a colorbar
+            # blank_frac = 0.025
+            colorbar_frac = 0.025
+
+            plot_width = 1 - colorbar_frac# - blank_frac
+            width_1 = plot_width * range_1 / (range_1 + range_3)
+            width_3 = plot_width * range_3 / (range_1 + range_3)
+
+            ncols = 3
+            width_ratios = [width_1, width_3, colorbar_frac]#blank_frac, colorbar_frac]
+
+        # Set the figure width. The height will be adjusted automatically to produce the
+        # right aspect ratio.
+        fig_width = self.settings['combined_scatter_plot_width']
+        fig = plt.figure(figsize=(fig_width, fig_width))
+        gs = GridSpec(
+            2, ncols,
+            figure=fig,
+            height_ratios=[range_3, range_2],
+            width_ratios=width_ratios,
+        )
+
+        ax12 = fig.add_subplot(gs[1, 0])
+        ax13 = fig.add_subplot(gs[0, 0], sharex=ax12)
+        ax32 = fig.add_subplot(gs[1, 1], sharey=ax12)
+
+        if discrete_color_map:
+            # Show the legend in the middle of the upper right open space.
+            legend_ax = fig.add_subplot(gs[0, 1])
+            legend_ax.axis('off')
+        else:
+            # Show the colorbar on the right side of everything.
+            cax = fig.add_subplot(gs[:, 2])
+
+        plot_kwargs = {
+            's': self.settings['scatter_plot_marker_size'],
+            'edgecolors': 'gray',
+            'cmap': cmap,
+        }
+        plot_kwargs.update(kwargs)
+
+        scatter = ax12.scatter(
+            use_embedding[:, axis_1],
+            use_embedding[:, axis_2],
+            c=c12,
+            **plot_kwargs,
+        )
+        ax12.set_xlabel(f'Component {axis_1 + 1}')
+        ax12.set_ylabel(f'Component {axis_2 + 1}')
+        ax12.set_xlim(min_1, max_1)
+        ax12.set_ylim(min_2, max_2)
+
+        ax13.scatter(
+            use_embedding[:, axis_1],
+            use_embedding[:, axis_3],
+            c=c13,
+            **plot_kwargs
+        )
+        ax13.set_ylabel(f'Component {axis_3 + 1}')
+        ax13.tick_params(labelbottom=False)
+        ax13.set_ylim(min_3, max_3)
+
+        ax32.scatter(
+            use_embedding[:, axis_3],
+            use_embedding[:, axis_2],
+            c=c32,
+            **plot_kwargs
+        )
+        ax32.set_xlabel(f'Component {axis_3 + 1}')
+        ax32.tick_params(labelleft=False)
+        ax32.set_xlim(min_3, max_3)
+
+        if discrete_color_map:
+            # Show a legend with the discrete colors
+            legend_ax.legend(handles=scatter.legend_elements()[0],
+                             labels=discrete_color_map.keys(),
+                             loc='center')
+        else:
+            # Show a colorbar
+            if label is not None:
+                cb = fig.colorbar(sm, cax=cax, label=label)
+            else:
+                cb = fig.colorbar(sm, cax=cax)
+
+            if invert_colorbar:
+                # workaround: in my version of matplotlib, the ticks disappear if
+                # you invert the colorbar y-axis. Save the ticks, and put them back
+                # to work around that bug.
+                ticks = cb.get_ticks()
+                cb.ax.invert_yaxis()
+                cb.set_ticks(ticks)
+
+        # Calculate the aspect ratio, and regenerate the figure a few times until we get
+        # it right.
+        while True:
+            fig.canvas.draw()
+
+            coord = ax12.get_position() * fig.get_size_inches()
+            plot_width = coord[1][0] - coord[0][0]
+            plot_height = coord[1][1] - coord[0][1]
+            plot_ratio = plot_height / plot_width
+
+            aspect_ratio = plot_ratio / ax12.get_data_ratio()
+
+            if np.abs(aspect_ratio - 1) < 0.001:
+                # Good enough
+                break
+
+            fig.set_size_inches([fig_width, fig.get_size_inches()[1] / aspect_ratio])
 
     def do_component_blondin_plot(self, axis_1=0, axis_2=1, marker_size=40):
         indicators = self.spectral_indicators
@@ -1530,9 +1650,7 @@ class ManifoldTwinsAnalysis:
             The matplotlib figure to save. If figure is None, then we get the current
             figure from matplotlib and save that.
         **kwargs
-            By default, the settings for savefig are taken from
-            self.settings["matplotlib_savefig_keywords"], but they can be overridden
-            for individual figures with kwargs.
+            Additional kwargs to pass to savefig.
         """
         if figure is None:
             figure = plt.gcf()
@@ -1544,6 +1662,5 @@ class ManifoldTwinsAnalysis:
 
         figure.savefig(
             path,
-            **self.settings["matplotlib_savefig_keywords"],
             **kwargs
         )

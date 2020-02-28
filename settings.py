@@ -61,21 +61,25 @@ default_settings = {
     # Matplotlib settings for all figures.
     "matplotlib_settings": {
         "figure.figsize": (5., 4.),
-        "figure.autolayout": True,
+        "figure.constrained_layout.use": True,
         "figure.max_open_warning": 1000,
-    },
-
-    # Keywords for saving matplotlib figures.
-    "matplotlib_savefig_keywords": {
-        "bbox_inches": "tight",
-        "pad_inches": 0.,
     },
 
     # Colormap to use
     "colormap": plt.cm.coolwarm,
 
     # Size of full-page spectra figures
-    "spectrum_plot_figsize": (9., 4.),
+    "spectrum_plot_figsize": (9., 2.8),
+    "spectrum_plot_figsize_double": (9., 5.5),
+    "spectrum_plot_figsize_triple": (9., 8.),
+
+    # Width of full-page combined component scatter plots
+    "combined_scatter_plot_width": 9.,
+
+    # Scatter plot properties
+    "scatter_plot_marker_size": 70.,
+    "combined_scatter_plot_wspace": 0.01,
+    "combined_scatter_plot_hspace": 0.01,
 
     # Choose how to plot spectra. Options are "f_nu" or "f_lambda". In this analysis, we
     # do everything in F_lambda, but plots of SNe Ia look a lot better in F_nu because
@@ -85,5 +89,5 @@ default_settings = {
 
     # Default labels for spectrum plots
     "spectrum_plot_xlabel": "Wavelength ($\AA$)",
-    "spectrum_plot_ylabel": "Normalized flux (erg/$cm^2$/s/Hz)"
+    "spectrum_plot_ylabel": "Normalized flux\n(erg/$cm^2$/s/Hz)"
 }
