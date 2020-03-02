@@ -784,7 +784,7 @@ class ManifoldTwinsAnalysis:
         # Build the mask taking masked columns into account if applicable.
         for column in quad_ref_columns + lin_ref_columns + [target_column]:
             try:
-                mask &= ~column.mask
+                mask = mask & ~column.mask
             except AttributeError:
                 continue
 
