@@ -26,10 +26,11 @@ def _build_george_gp(coordinates, target_value_uncertainties, parameters):
     return gp
 
 
-class GaussianProcessStandardizer():
+class ManifoldGaussianProcess():
     """Class to build and evaluate a Gaussian Process over a given manifold."""
-    def __init__(self, coordinates, target_values, target_value_uncertainties,
+    def __init__(self, analysis, coordinates, target_values, target_value_uncertainties,
                  covariates=None, mask=None, parameters=None):
+        self.analysis = analysis
         self.coordinates = coordinates
         self.target_values = target_values
         self.target_value_uncertainties = target_value_uncertainties
@@ -197,7 +198,7 @@ class GaussianProcessStandardizer():
             print(f"    {'Fit std':25s} {std:.3f} mag")
 
     def predict(self, prediction_coordinates, prediction_covariates=None,
-                 parameters=None, mask=None, return_uncertainties=True):
+                parameters=None, mask=None, return_uncertainties=True):
         """Predict a Gaussian Process on the given data."""
         if parameters is None:
             parameters = self.parameters
@@ -284,85 +285,62 @@ class GaussianProcessStandardizer():
 
         return predictions, prediction_uncertainties
 
-    def plot(self, axis_1=0, axis_2=1, num_points=200, border=0.1, vmin=-0.2, vmax=0.2,
-             **kwargs):
-        # Only show the data that were used for conditioning the GP.
-        condition_coordinates = self.coordinates[self.mask]
+    def plot(self, axis_1=0, axis_2=1, axis_3=2, vmin=-0.3, vmax=0.3, num_points=200,
+             edgecolors='0.3', **kwargs):
+        """Plot the GP predictions over the parameter space"""
+        # Subtract the median of the target values. This is not guaranteed to be near 0,
+        # and will mess up the plot otherwise.
+        zeropoint = np.median(self.target_values[self.mask])
 
-        scatter_x = condition_coordinates[:, axis_1]
-        scatter_y = condition_coordinates[:, axis_2]
-
-        min_x = np.nanmin(scatter_x)
-        max_x = np.nanmax(scatter_x)
-        min_y = np.nanmin(scatter_y)
-        max_y = np.nanmax(scatter_y)
-
-        width_x = max_x - min_x
-        width_y = max_y - min_y
-
-        min_x -= border * width_x
-        max_x += border * width_x
-        min_y -= border * width_y
-        max_y += border * width_y
-
-        plot_x, plot_y = np.meshgrid(
-            np.linspace(min_x, max_x, num_points), np.linspace(min_y, max_y, num_points)
-        )
-
-        flat_plot_x = plot_x.flatten()
-        flat_plot_y = plot_y.flatten()
-
-        plot_coords = np.zeros((len(flat_plot_x), self.coordinates.shape[1]))
-
-        plot_coords[:, axis_1] = flat_plot_x
-        plot_coords[:, axis_2] = flat_plot_y
-
-        predictions = self.predict(plot_coords, return_uncertainties=False)
-        predictions = predictions.reshape(plot_x.shape)
-
-        # Subtract out the fitted offset.
-        gp_parameters, offset, covariate_slopes = self._parse_parameters(
-            self.parameters
-        )
-        predictions -= offset
-        plot_target_values = self.target_values[self.mask] - offset
-
-        # Apply corrections for covariates.
-        if len(covariate_slopes) > 0:
-            covariates_model = self.covariates.T.dot(covariate_slopes)
-            plot_target_values -= covariates_model[self.mask]
-
-        fig, ax = plt.subplots()
-
-        plot = ax.scatter(
-            scatter_x,
-            scatter_y,
-            s=60,
-            c=plot_target_values,
-            cmap=plt.cm.coolwarm.reversed(),
+        ax12, ax13, ax32 = self.analysis.scatter_combined(
+            self.target_values - zeropoint,
+            mask=self.mask,
+            label='Magnitude residuals',
+            axis_1=axis_1,
+            axis_2=axis_2,
+            axis_3=axis_3,
             vmin=vmin,
             vmax=vmax,
-            edgecolors='k',
-            linewidths=0.7,
-            **kwargs,
+            invert_colorbar=True,
+            edgecolors=edgecolors,
+            **kwargs
         )
 
-        ax.set_xlabel("Component %d" % (axis_1 + 1))
-        ax.set_ylabel("Component %d" % (axis_2 + 1))
+        subplot_datas = [
+            (ax12, axis_1, axis_2),
+            (ax13, axis_1, axis_3),
+            (ax32, axis_3, axis_2),
+        ]
 
-        cb = fig.colorbar(plot, label="Magnitude residuals")
+        for ax, axis_x, axis_y in subplot_datas:
+            min_x, max_x = ax.get_xlim()
+            min_y, max_y = ax.get_ylim()
 
-        # workaround: in my version of matplotlib, the ticks disappear if you invert the
-        # colorbar y-axis. Save the ticks, and put them back to work around that bug.
-        ticks = cb.get_ticks()
-        cb.ax.invert_yaxis()
-        cb.set_ticks(ticks)
+            plot_x, plot_y = np.meshgrid(
+                np.linspace(min_x, max_x, num_points),
+                np.linspace(min_y, max_y, num_points)
+            )
 
-        ax.imshow(
-            predictions[::-1],
-            extent=(min_x, max_x, min_y, max_y),
-            cmap=plt.cm.coolwarm.reversed(),
-            vmin=vmin,
-            vmax=vmax,
-            aspect="auto",
-        )
+            flat_plot_x = plot_x.flatten()
+            flat_plot_y = plot_y.flatten()
+
+            plot_coords = np.zeros((len(flat_plot_x), self.coordinates.shape[1]))
+            plot_coords[:, axis_x] = flat_plot_x
+            plot_coords[:, axis_y] = flat_plot_y
+
+            # Use the mean value of the covariates.
+            mean_covariates = np.mean(self.covariates[:, self.mask], axis=1)
+            repeat_means = np.repeat(mean_covariates[:, None], len(flat_plot_x), axis=1)
+
+            predictions = self.predict(plot_coords, repeat_means,
+                                       return_uncertainties=False) - zeropoint
+            predictions = predictions.reshape(plot_x.shape)
+
+            ax.imshow(
+                predictions[::-1],
+                extent=(min_x, max_x, min_y, max_y),
+                cmap=plt.cm.coolwarm.reversed(),
+                vmin=vmin,
+                vmax=vmax,
+                aspect="auto",
+            )

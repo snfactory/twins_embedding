@@ -577,6 +577,10 @@ class ManifoldTwinsAnalysis:
 
         self.indicators = all_indicators
 
+        # Extract masks that we will use extensively.
+        self.peculiar_mask = (self.indicators['peculiar_type'] == 'Normal').filled()
+        self.host_mask = ~self.indicators['host_lssfr'].mask
+
     def load_isomap_indicators(self):
         """Extract Isomap indicators"""
         columns = []
@@ -949,6 +953,7 @@ class ManifoldTwinsAnalysis:
             mask = mask & raw_mask
 
         manifold_gp = ManifoldGaussianProcess(
+            self,
             self.embedding,
             mags,
             mag_errs,
@@ -1291,7 +1296,7 @@ class ManifoldTwinsAnalysis:
 
     def scatter_combined(self, variable, mask=None, label=None, axis_1=0, axis_2=1,
                          axis_3=2, vmin=None, vmax=None, discrete_color_map=None,
-                         invert_colorbar=False, wspace=0., hspace=0., **kwargs):
+                         invert_colorbar=False, **kwargs):
         """Scatter plot that shows three components simultaneously while preserving
         aspect ratios.
 
@@ -1333,12 +1338,12 @@ class ManifoldTwinsAnalysis:
             c13 = sm.to_rgba(c13)
             c32 = sm.to_rgba(c32)
 
-        min_1 = np.min(self.embedding[:, axis_1])
-        max_1 = np.max(self.embedding[:, axis_1])
-        min_2 = np.min(self.embedding[:, axis_2])
-        max_2 = np.max(self.embedding[:, axis_2])
-        min_3 = np.min(self.embedding[:, axis_3])
-        max_3 = np.max(self.embedding[:, axis_3])
+        min_1 = np.min(use_embedding[:, axis_1])
+        max_1 = np.max(use_embedding[:, axis_1])
+        min_2 = np.min(use_embedding[:, axis_2])
+        max_2 = np.max(use_embedding[:, axis_2])
+        min_3 = np.min(use_embedding[:, axis_3])
+        max_3 = np.max(use_embedding[:, axis_3])
 
         range_1 = max_1 - min_1
         range_2 = max_2 - min_2
@@ -1473,6 +1478,8 @@ class ManifoldTwinsAnalysis:
                 break
 
             fig.set_size_inches([fig_width, fig.get_size_inches()[1] / aspect_ratio])
+
+        return ax12, ax13, ax32
 
     def plot_flux(self, ax, flux, fluxerr=None, *args, c=None, label=None,
                   uncertainty_label=None, **kwargs):
