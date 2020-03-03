@@ -26,14 +26,18 @@ def _build_george_gp(coordinates, target_value_uncertainties, parameters):
     return gp
 
 
-class ManifoldGaussianProcess():
-    """Class to build and evaluate a Gaussian Process over a given manifold"""
+class GaussianProcessStandardizer():
+    """Class to build and evaluate a Gaussian Process over a given manifold."""
     def __init__(self, coordinates, target_values, target_value_uncertainties,
-                 covariates=None, condition_mask=None, parameters=None):
+                 covariates=None, mask=None, parameters=None):
         self.coordinates = coordinates
         self.target_values = target_values
         self.target_value_uncertainties = target_value_uncertainties
-        self.condition_mask = condition_mask
+
+        if mask is None:
+            self.mask = np.ones(len(target_values), dtype=bool)
+        else:
+            self.mask = mask
 
         # If we have additional covariates, parse them into a nice form.
         if covariates is None:
@@ -112,8 +116,8 @@ class ManifoldGaussianProcess():
         gp_parameters, offset, covariate_slopes = self._parse_parameters(parameters)
 
         gp = _build_george_gp(
-            self.coordinates[self.condition_mask],
-            self.target_value_uncertainties[self.condition_mask],
+            self.coordinates[self.mask],
+            self.target_value_uncertainties[self.mask],
             gp_parameters
         )
 
@@ -122,7 +126,7 @@ class ManifoldGaussianProcess():
         if len(covariate_slopes) > 0:
             model = offset + self.covariates.T.dot(covariate_slopes)
 
-        condition_residuals = (self.target_values - model)[self.condition_mask]
+        condition_residuals = (self.target_values - model)[self.mask]
 
         result = -gp.log_likelihood(condition_residuals)
 
@@ -185,7 +189,7 @@ class ManifoldGaussianProcess():
                 print(f"    {parameter_name:25s} {value:.3f} ± {uncertainty:.3f}")
 
             # Calculate statistics
-            good_residuals = self.residuals[self.condition_mask]
+            good_residuals = self.residuals[self.mask]
             nmad = math.nmad(good_residuals)
             std = np.std(good_residuals)
 
@@ -193,22 +197,22 @@ class ManifoldGaussianProcess():
             print(f"    {'Fit std':25s} {std:.3f} mag")
 
     def predict(self, prediction_coordinates, prediction_covariates=None,
-                 parameters=None, condition_mask=None, return_uncertainties=True):
+                 parameters=None, mask=None, return_uncertainties=True):
         """Predict a Gaussian Process on the given data."""
         if parameters is None:
             parameters = self.parameters
 
-        if condition_mask is None:
-            condition_mask = np.ones(len(self.target_values), dtype=bool)
+        if mask is None:
+            mask = np.ones(len(self.target_values), dtype=bool)
 
-        if self.condition_mask is not None:
-            condition_mask = condition_mask & self.condition_mask
+        if self.mask is not None:
+            mask = mask & self.mask
 
         gp_parameters, offset, covariate_slopes = self._parse_parameters(parameters)
 
         gp = _build_george_gp(
-            self.coordinates[condition_mask],
-            self.target_value_uncertainties[condition_mask],
+            self.coordinates[mask],
+            self.target_value_uncertainties[mask],
             gp_parameters
         )
 
@@ -217,7 +221,7 @@ class ManifoldGaussianProcess():
         if len(covariate_slopes) > 0:
             model += self.covariates.T.dot(covariate_slopes)
 
-        condition_residuals = (self.target_values - model)[condition_mask]
+        condition_residuals = (self.target_values - model)[mask]
 
         predictions = gp.predict(
             condition_residuals,
@@ -255,35 +259,35 @@ class ManifoldGaussianProcess():
         prediction_uncertainties = np.zeros(len(self.target_values))
 
         # Do out-of-sample predictions for data in the conditioning sample.
-        locs = np.where(self.condition_mask)[0]
+        locs = np.where(self.mask)[0]
         for loc in locs:
-            mask = np.zeros(len(self.target_values), dtype=bool)
-            mask[loc] = True
+            oos_mask = np.zeros(len(self.target_values), dtype=bool)
+            oos_mask[loc] = True
 
             prediction, prediction_uncertainty = self.predict(
-                self.coordinates[mask],
-                self.covariates[:, mask],
-                condition_mask = ~mask,
+                self.coordinates[oos_mask],
+                self.covariates[:, oos_mask],
+                mask=~oos_mask,
                 return_uncertainties=True,
             )
 
-            predictions[mask] = prediction
-            prediction_uncertainties[mask] = prediction_uncertainty
+            predictions[oos_mask] = prediction
+            prediction_uncertainties[oos_mask] = prediction_uncertainty
 
         other_predictions, other_prediction_uncertainties = self.predict(
-            self.coordinates[~self.condition_mask],
-            self.covariates[:, ~self.condition_mask],
+            self.coordinates[~self.mask],
+            self.covariates[:, ~self.mask],
         )
 
-        predictions[~self.condition_mask] = other_predictions
-        prediction_uncertainties[~self.condition_mask] = other_prediction_uncertainties
+        predictions[~self.mask] = other_predictions
+        prediction_uncertainties[~self.mask] = other_prediction_uncertainties
 
         return predictions, prediction_uncertainties
 
     def plot(self, axis_1=0, axis_2=1, num_points=200, border=0.1, vmin=-0.2, vmax=0.2,
              **kwargs):
         # Only show the data that were used for conditioning the GP.
-        condition_coordinates = self.coordinates[self.condition_mask]
+        condition_coordinates = self.coordinates[self.mask]
 
         scatter_x = condition_coordinates[:, axis_1]
         scatter_y = condition_coordinates[:, axis_2]
@@ -321,12 +325,12 @@ class ManifoldGaussianProcess():
             self.parameters
         )
         predictions -= offset
-        plot_target_values = self.target_values[self.condition_mask] - offset
+        plot_target_values = self.target_values[self.mask] - offset
 
         # Apply corrections for covariates.
         if len(covariate_slopes) > 0:
             covariates_model = self.covariates.T.dot(covariate_slopes)
-            plot_target_values -= covariates_model[self.condition_mask]
+            plot_target_values -= covariates_model[self.mask]
 
         fig, ax = plt.subplots()
 
