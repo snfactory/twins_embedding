@@ -85,6 +85,7 @@ class ManifoldTwinsAnalysis:
         center_mask = []
 
         self.attrition_enough_spectra = 0
+        self.attrition_total_spectra = 0
         self.attrition_salt_daymax = 0
         self.attrition_range = 0
         self.attrition_usable = 0
@@ -98,6 +99,7 @@ class ManifoldTwinsAnalysis:
                 )
                 continue
             self.attrition_enough_spectra += 1
+            self.attrition_total_spectra += len(supernova.spectra)
 
             daymax_err = supernova.salt_fit['t0_err']
             if daymax_err > 1.0:
@@ -1401,7 +1403,7 @@ class ManifoldTwinsAnalysis:
             cax = fig.add_subplot(gs[:, 2])
 
         plot_kwargs = {
-            's': self.settings['scatter_plot_marker_size'],
+            's': self.settings['combined_scatter_plot_marker_size'],
             'edgecolors': 'gray',
         }
 
@@ -1569,3 +1571,19 @@ class ManifoldTwinsAnalysis:
             path,
             **kwargs
         )
+
+    def latex_open(self, filename):
+        """Open a given latex file for writing, and make directories if need be.
+
+        Parameters
+        ----------
+        filename : str
+            The output filename. This will be placed in the directory specified by
+            self.settings['latex_directory']
+        """
+        directory = self.settings['latex_directory']
+        os.makedirs(directory, exist_ok=True)
+
+        path = os.path.join(directory, filename)
+
+        return open(path, 'w')

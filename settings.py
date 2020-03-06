@@ -78,7 +78,8 @@ default_settings = {
     "spectrum_plot_figsize_triple": (9., 8.),
 
     # Width of full-page combined component scatter plots
-    "combined_scatter_plot_width": 9.,
+    "combined_scatter_plot_width": 6.,
+    "combined_scatter_plot_marker_size": 40.,
 
     # Scatter plot properties
     "scatter_plot_marker_size": 70.,
@@ -91,5 +92,8 @@ default_settings = {
 
     # Default labels for spectrum plots
     "spectrum_plot_xlabel": "Wavelength ($\AA$)",
-    "spectrum_plot_ylabel": "Normalized flux\n(erg/$cm^2$/s/Hz)"
+    "spectrum_plot_ylabel": "Normalized flux\n(erg/$cm^2$/s/Hz)",
+
+    # Directory to save LaTeX output to
+    "latex_directory": "./latex/"
 }
