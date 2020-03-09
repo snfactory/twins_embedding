@@ -12,7 +12,7 @@ import numpy as np
 import os
 import pickle
 import sys
-import tqdm
+from tqdm.autonotebook import tqdm
 
 from settings import default_settings
 from manifold_gp import ManifoldGaussianProcess
@@ -90,7 +90,7 @@ class ManifoldTwinsAnalysis:
         self.attrition_range = 0
         self.attrition_usable = 0
 
-        for supernova in tqdm.tqdm(self.dataset.targets):
+        for supernova in tqdm(self.dataset.targets):
             if len(supernova.spectra) < 5:
                 self.print_verbose(
                     "Cutting %s, not enough spectra to guarantee a "
@@ -1204,7 +1204,7 @@ class ManifoldTwinsAnalysis:
 
         # Do bootstrapping
         samples = []
-        for i in tqdm.tqdm(range(num_samples)):
+        for i in tqdm(range(num_samples)):
             samples.append(
                 self.fit_salt_magnitude_residuals(*args, bootstrap=True, verbosity=0,
                                                   **kwargs)
@@ -1270,7 +1270,7 @@ class ManifoldTwinsAnalysis:
                 c=use_var,
                 **plot_kwargs
             )
-            ax.set_zlabel("Component %d" % axis_3)
+            ax.set_zlabel("$\\xi_%d$" % (axis_3 + 1))
         else:
             ax = fig.add_subplot(111)
             plot = ax.scatter(
@@ -1280,8 +1280,8 @@ class ManifoldTwinsAnalysis:
                 **plot_kwargs
             )
 
-        ax.set_xlabel("Component %d" % (axis_1 + 1))
-        ax.set_ylabel("Component %d" % (axis_2 + 1))
+        ax.set_xlabel("$\\xi_%d$" % (axis_1 + 1))
+        ax.set_ylabel("$\\xi_%d$" % (axis_2 + 1))
 
         if label is not None:
             cb = fig.colorbar(plot, label=label)
@@ -1418,8 +1418,8 @@ class ManifoldTwinsAnalysis:
             c=c12,
             **plot_kwargs,
         )
-        ax12.set_xlabel(f'Component {axis_1 + 1}')
-        ax12.set_ylabel(f'Component {axis_2 + 1}')
+        ax12.set_xlabel(f'$\\xi_{axis_1 + 1}$')
+        ax12.set_ylabel(f'$\\xi_{axis_2 + 1}$')
         ax12.set_xlim(min_1, max_1)
         ax12.set_ylim(min_2, max_2)
 
@@ -1429,7 +1429,7 @@ class ManifoldTwinsAnalysis:
             c=c13,
             **plot_kwargs
         )
-        ax13.set_ylabel(f'Component {axis_3 + 1}')
+        ax13.set_ylabel(f'$\\xi_{axis_3 + 1}$')
         ax13.tick_params(labelbottom=False)
         ax13.set_ylim(min_3, max_3)
 
@@ -1439,7 +1439,7 @@ class ManifoldTwinsAnalysis:
             c=c32,
             **plot_kwargs
         )
-        ax32.set_xlabel(f'Component {axis_3 + 1}')
+        ax32.set_xlabel(f'$\\xi_{axis_3 + 1}$')
         ax32.tick_params(labelleft=False)
         ax32.set_xlim(min_3, max_3)
 

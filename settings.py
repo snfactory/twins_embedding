@@ -78,7 +78,7 @@ default_settings = {
     "spectrum_plot_figsize_triple": (9., 8.),
 
     # Width of full-page combined component scatter plots
-    "combined_scatter_plot_width": 6.,
+    "combined_scatter_plot_width": 7.,
     "combined_scatter_plot_marker_size": 40.,
 
     # Scatter plot properties

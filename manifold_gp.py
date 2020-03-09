@@ -197,6 +197,23 @@ class ManifoldGaussianProcess():
             print(f"    {'Fit NMAD':25s} {nmad:.3f} mag")
             print(f"    {'Fit std':25s} {std:.3f} mag")
 
+    def _calculate_covariate_model(self, prediction_covariates=None, parameters=None):
+        """Calculate the model with a given set of covariates"""
+        if parameters is None:
+            parameters = self.parameters
+
+        gp_parameters, offset, covariate_slopes = self._parse_parameters(parameters)
+
+        # Add in zeropoint offset
+        model = offset
+
+        # Add in covariates.
+        if prediction_covariates is not None:
+            prediction_covariates = np.atleast_2d(prediction_covariates)
+            model += prediction_covariates.T.dot(covariate_slopes)
+
+        return model
+
     def predict(self, prediction_coordinates, prediction_covariates=None,
                 parameters=None, mask=None, return_uncertainties=True):
         """Predict a Gaussian Process on the given data."""
@@ -217,11 +234,9 @@ class ManifoldGaussianProcess():
             gp_parameters
         )
 
-        # Calculate the covariate model for the conditioning dataset.
-        model = offset
-        if len(covariate_slopes) > 0:
-            model += self.covariates.T.dot(covariate_slopes)
-
+        # Calculate the covariate model for the conditioning dataset, and subtract it
+        # out to get the model residuals.
+        model = self._calculate_covariate_model(self.covariates, parameters)
         condition_residuals = (self.target_values - model)[mask]
 
         predictions = gp.predict(
@@ -235,13 +250,10 @@ class ManifoldGaussianProcess():
             predictions, prediction_variances = predictions
             prediction_uncertainties = np.sqrt(prediction_variances)
 
-        # Add in zeropoint offset
-        predictions += offset
-
-        # Add in covariates if they were passed in.
-        if prediction_covariates is not None:
-            prediction_covariates = np.atleast_2d(prediction_covariates)
-            predictions += prediction_covariates.T.dot(covariate_slopes)
+        # Add the covariate model back in to the predictions.
+        prediction_model = self._calculate_covariate_model(prediction_covariates,
+                                                           parameters)
+        predictions += prediction_model
 
         if return_uncertainties:
             return predictions, prediction_uncertainties
@@ -288,12 +300,17 @@ class ManifoldGaussianProcess():
     def plot(self, axis_1=0, axis_2=1, axis_3=2, vmin=-0.3, vmax=0.3, num_points=200,
              edgecolors='0.3', **kwargs):
         """Plot the GP predictions over the parameter space"""
-        # Subtract the median of the target values. This is not guaranteed to be near 0,
-        # and will mess up the plot otherwise.
-        zeropoint = np.median(self.target_values[self.mask])
+        # We want to only show the residuals, so we need to take out the covariates and
+        # zeropoint offset.
+        covariate_model = self._calculate_covariate_model(self.covariates)
+        residuals = self.target_values - covariate_model
+
+        # Set the median value of the residuals to 0 for the plot.
+        zeropoint = np.median(residuals)
+        residuals -= zeropoint
 
         ax12, ax13, ax32 = self.analysis.scatter_combined(
-            self.target_values - zeropoint,
+            residuals,
             mask=self.mask,
             label='Magnitude residuals',
             axis_1=axis_1,
@@ -328,12 +345,10 @@ class ManifoldGaussianProcess():
             plot_coords[:, axis_x] = flat_plot_x
             plot_coords[:, axis_y] = flat_plot_y
 
-            # Use the mean value of the covariates.
-            mean_covariates = np.mean(self.covariates[:, self.mask], axis=1)
-            repeat_means = np.repeat(mean_covariates[:, None], len(flat_plot_x), axis=1)
-
-            predictions = self.predict(plot_coords, repeat_means,
-                                       return_uncertainties=False) - zeropoint
+            # Predict the GP residuals over the manifold without covariates.
+            predictions = self.predict(plot_coords, return_uncertainties=False)
+            predictions -= self.parameter_dict['offset'] 
+            predictions -= zeropoint
             predictions = predictions.reshape(plot_x.shape)
 
             ax.imshow(

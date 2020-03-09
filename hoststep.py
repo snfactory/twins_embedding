@@ -102,22 +102,22 @@ def plot_mean(ax, min_x, max_x, mean, mean_uncertainty, color):
 
 
 def plot_step(variable, residuals, residual_uncertainties, host_data, mask):
-    if variable == 'lssfr':
+    if variable == 'host_lssfr':
         threshold = -10.8
         x_label = 'log(lsSFR)'
         z_label = '$P_{Young}$'
-        probability_tag = 'p(prompt)'
-    elif variable == 'gmass':
+        probability_tag = 'host_p(prompt)'
+    elif variable == 'host_gmass':
         threshold = 10.
         x_label = 'log($M_* / M_\odot$) (global)'
         z_label = '$P_{Young}$'
-        probability_tag = 'p(highgmass)'
+        probability_tag = 'host_p(highgmass)'
     else:
         raise Exception(f"Unknown variable {variable}!")
 
     host_values = host_data[variable]
-    host_values_down = host_data[variable + '.err_down']
-    host_values_up = host_data[variable + '.err_up']
+    host_values_down = host_data[variable + '_err_down']
+    host_values_up = host_data[variable + '_err_up']
     host_probabilities = host_data[probability_tag]
 
     step_result = fit_step(host_probabilities, residuals, residual_uncertainties, mask)
