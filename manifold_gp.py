@@ -192,7 +192,7 @@ class ManifoldGaussianProcess():
             # Calculate statistics
             good_residuals = self.residuals[self.mask]
             nmad = math.nmad(good_residuals)
-            std = np.std(good_residuals)
+            std = np.std(good_residuals, ddof=1)
 
             print(f"    {'Fit NMAD':25s} {nmad:.3f} mag")
             print(f"    {'Fit std':25s} {std:.3f} mag")

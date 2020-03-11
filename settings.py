@@ -95,5 +95,8 @@ default_settings = {
     "spectrum_plot_ylabel": "Normalized flux\n(erg/$cm^2$/s/Hz)",
 
     # Directory to save LaTeX output to
-    "latex_directory": "./latex/"
+    "latex_directory": "./latex/",
+
+    # Different tests to run
+    "test_no_interpolation": False,
 }

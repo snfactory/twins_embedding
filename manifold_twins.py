@@ -43,6 +43,14 @@ class ManifoldTwinsAnalysis:
         self.print_verbose("Estimating the spectra at maximum light...")
         self.model_differential_evolution()
 
+        if self.settings['test_no_interpolation']:
+            # As a test, use the spectrum near maximum light directly rather than doing
+            # interpolation.
+            self.print_verbose("TEST: Using the spectra closest to maximum light "
+                               "directly, without the time evolution model...")
+            self.maximum_flux = self.flux[self.center_mask]
+            self.maximum_fluxerr = self.fluxerr[self.center_mask]
+
         self.print_verbose("Reading between the lines...")
         self.read_between_the_lines()
 
@@ -55,8 +63,11 @@ class ManifoldTwinsAnalysis:
         self.print_verbose("Loading other indicators of diversity...")
         self.load_indicators()
 
-        self.print_verbose("Fitting RBTL GP to magnitude residuals...")
+        self.print_verbose("Fitting RBTL Twins Manifold GP...")
         self.residuals_rbtl_gp = self.fit_gp_magnitude_residuals()
+
+        self.print_verbose("Fitting SALT2 Twins Manifold GP...")
+        self.residuals_salt_gp = self.fit_gp_magnitude_residuals('salt_raw')
 
         self.print_verbose("Calculating SALT2 magnitude residuals...")
         self.residuals_salt = self.fit_salt_magnitude_residuals()
@@ -421,6 +432,8 @@ class ManifoldTwinsAnalysis:
             + ';' + model_hash
             + ';' + str(self.settings['rbtl_fiducial_rv'])
         )
+        if self.settings['test_no_interpolation']:
+            hash_info += ';no_interpolation'
         self.rbtl_hash = md5(hash_info.encode("ascii")).hexdigest()
 
         # If we ran this model before, read the cached result if we can.
