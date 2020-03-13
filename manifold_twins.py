@@ -1070,6 +1070,10 @@ class ManifoldTwinsAnalysis:
         # Reject bad SALT2 fits.
         mask &= self.salt_mask
 
+        # Apply the Twins Manifold mask. This ensures that we are comparing to the same
+        # sample.
+        mask &= self.uncertainty_mask
+
         # Require reasonable redshifts and colors for the determination of
         # standardization parameters. The redshift_color_mask produced by the
         # read_between_the_lines algorithm does this.
@@ -1226,6 +1230,39 @@ class ManifoldTwinsAnalysis:
         samples = table.Table(samples)
 
         return reference, samples
+
+    def calculate_fit_rv(self, slope, slope_uncertainty=None):
+        """Calculate the true RV value given an additional correction in AV that was
+        applied to the the corrected magnitude residuals.
+        """
+        def to_min(x, measured_color_law):
+            return np.sum((extinction.fitzpatrick99(self.wave, x[0], x[1]) -
+                           measured_color_law)**2)
+
+        res = minimize(
+            to_min,
+            [1., self.settings['rbtl_fiducial_rv']],
+            args=(self.rbtl_color_law + slope,)
+        )
+        true_rv = res.x[1]
+
+        if slope_uncertainty is None:
+            return true_rv
+        else:
+            res_up = minimize(
+                to_min,
+                res.x,
+                args=(self.rbtl_color_law + slope + slope_uncertainty,)
+            )
+
+            res_down = minimize(
+                to_min,
+                res.x,
+                args=(self.rbtl_color_law + slope - slope_uncertainty,)
+            )
+
+            true_rv_uncertainty = (res_up.x[1] - res_down.x[1]) / 2.
+            return true_rv, true_rv_uncertainty
 
     def scatter(self, variable, mask=None, weak_mask=None, label=None, axis_1=0,
                 axis_2=1, axis_3=None, invert_colorbar=False, **kwargs):

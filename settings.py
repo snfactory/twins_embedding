@@ -79,7 +79,7 @@ default_settings = {
 
     # Width of full-page combined component scatter plots
     "combined_scatter_plot_width": 7.,
-    "combined_scatter_plot_marker_size": 40.,
+    "combined_scatter_plot_marker_size": 50.,
 
     # Scatter plot properties
     "scatter_plot_marker_size": 70.,
