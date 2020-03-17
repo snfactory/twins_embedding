@@ -101,7 +101,8 @@ def plot_mean(ax, min_x, max_x, mean, mean_uncertainty, color):
     )
 
 
-def plot_step(variable, residuals, residual_uncertainties, host_data, mask):
+def plot_step(variable, residuals, residual_uncertainties, host_data, mask, title=None,
+              **kwargs):
     if variable == 'host_lssfr':
         threshold = -10.8
         x_label = 'log(lsSFR)'
@@ -110,7 +111,7 @@ def plot_step(variable, residuals, residual_uncertainties, host_data, mask):
     elif variable == 'host_gmass':
         threshold = 10.
         x_label = 'log($M_* / M_\odot$) (global)'
-        z_label = '$P_{Young}$'
+        z_label = '$P_{High mass}$'
         probability_tag = 'host_p(highgmass)'
     else:
         raise Exception(f"Unknown variable {variable}!")
@@ -120,10 +121,15 @@ def plot_step(variable, residuals, residual_uncertainties, host_data, mask):
     host_values_up = host_data[variable + '_err_up']
     host_probabilities = host_data[probability_tag]
 
-    step_result = fit_step(host_probabilities, residuals, residual_uncertainties, mask)
+    step_result = fit_step(host_probabilities, residuals, residual_uncertainties, mask,
+                           **kwargs)
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, sharey=True, figsize=(7, 4),
-                                   gridspec_kw={'width_ratios': [3, 1]})
+    fig, (ax1, ax2) = plt.subplots(1, 2, sharey=True, figsize=(6, 4),
+                                   gridspec_kw={'width_ratios': [5, 1]})
+
+    if title is not None:
+        fig.suptitle(title)
+
     ax1.errorbar(
         host_values[mask],
         residuals[mask],
@@ -147,7 +153,7 @@ def plot_step(variable, residuals, residual_uncertainties, host_data, mask):
     ax1.axvline(threshold, c='k', lw=2, ls='--')
 
     ax1.set_xlabel(x_label)
-    ax1.set_ylabel("Residual magnitudes")
+    ax1.set_ylabel("Magnitude residuals")
 
     ax1.set_ylim(-0.6, 0.6)
 
@@ -183,6 +189,6 @@ def plot_step(variable, residuals, residual_uncertainties, host_data, mask):
         )
         ax.set_xlim(plot_min, plot_max)
 
-    plt.colorbar(scatter, label=z_label)
+    plt.colorbar(scatter, label=z_label, aspect=30)
 
     return ax1, ax2

@@ -1219,9 +1219,12 @@ class ManifoldTwinsAnalysis:
         # Calculate reference result
         reference = self.fit_salt_magnitude_residuals(*args, verbosity=0, **kwargs)
 
+        verbosity.kwargs.get('verbosity', self.settings['verbosity'])
+
         # Do bootstrapping
         samples = []
-        for i in tqdm(range(num_samples)):
+
+        for i in tqdm(range(num_samples), leave=False, desc='SALT2 bootstrapping'):
             samples.append(
                 self.fit_salt_magnitude_residuals(*args, bootstrap=True, verbosity=0,
                                                   **kwargs)
