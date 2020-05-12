@@ -1219,7 +1219,7 @@ class ManifoldTwinsAnalysis:
         # Calculate reference result
         reference = self.fit_salt_magnitude_residuals(*args, verbosity=0, **kwargs)
 
-        verbosity.kwargs.get('verbosity', self.settings['verbosity'])
+        verbosity = kwargs.get('verbosity', self.settings['verbosity'])
 
         # Do bootstrapping
         samples = []
@@ -1350,8 +1350,8 @@ class ManifoldTwinsAnalysis:
             cb.set_ticks(ticks)
 
     def scatter_combined(self, variable, mask=None, label=None, axis_1=0, axis_2=1,
-                         axis_3=2, vmin=None, vmax=None, discrete_color_map=None,
-                         invert_colorbar=False, **kwargs):
+                         axis_3=2, vmin=None, vmax=None, cmap=None,
+                         discrete_color_map=None, invert_colorbar=False, **kwargs):
         """Scatter plot that shows three components simultaneously while preserving
         aspect ratios.
 
@@ -1380,7 +1380,8 @@ class ManifoldTwinsAnalysis:
             c13 = [color_id_map[i] for i in c13]
             c32 = [color_id_map[i] for i in c32]
         else:
-            cmap = self.settings['colormap']
+            if cmap is None:
+                cmap = self.settings['colormap']
 
             if invert_colorbar:
                 cmap = cmap.reversed()
