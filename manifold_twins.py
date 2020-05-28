@@ -484,8 +484,8 @@ class ManifoldTwinsAnalysis:
         """Parse and save the result of a run of the RBTL analysis"""
         self.rbtl_result = result
 
-        self.rbtl_colors = result["colors"]
-        self.rbtl_mags = result["magnitudes"]
+        self.rbtl_colors = result["colors"] - np.median(result['colors'])
+        self.rbtl_mags = result["magnitudes"] - np.median(result['magnitudes'])
         self.mean_flux = result["mean_flux"]
 
         if self.settings['blinded']:
@@ -535,7 +535,7 @@ class ManifoldTwinsAnalysis:
             self.redshift_color_mask = (
                 (self.redshift_errs < 0.004)
                 & (self.helio_redshifts > 0.02)
-                & (self.rbtl_colors - np.median(self.rbtl_colors) < 0.5)
+                & (self.rbtl_colors < 0.5)
             )
 
     def generate_embedding(self, num_neighbors=None, num_components=-1):
