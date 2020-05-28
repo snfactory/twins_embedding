@@ -20,11 +20,11 @@ import utils
 import specind
 
 
-class ManifoldTwinsException(Exception):
+class TwinsEmbeddingException(Exception):
     pass
 
 
-class ManifoldTwinsAnalysis:
+class TwinsEmbeddingAnalysis:
     def __init__(self, **kwargs):
         """Load the dataset and setup the analysis"""
 
@@ -930,7 +930,7 @@ class ManifoldTwinsAnalysis:
                 & self.redshift_color_mask
             )
         else:
-            raise ManifoldTwinsException("Unknown kind %s!" % kind)
+            raise TwinsEmbeddingException("Unknown kind %s!" % kind)
 
         # Use the Isomap embedding for the GP coordinates.
         coordinates = self.embedding
@@ -1552,7 +1552,7 @@ class ManifoldTwinsAnalysis:
         elif plot_format == 'f_lambda':
             plot_scale = 1.
         else:
-            raise ManifoldTwinsException(f"Invalid plot format {plot_format}")
+            raise TwinsEmbeddingException(f"Invalid plot format {plot_format}")
 
         flux = np.atleast_2d(flux)
         if fluxerr is not None:
