@@ -480,6 +480,41 @@ class TwinsEmbeddingAnalysis:
         # Parse the result
         self._parse_rbtl_result(result)
 
+    def _calculate_rbtl_uncertainties(self):
+        mag_errs = []
+        color_errs = []
+
+        for idx in range(len(self.maximum_flux)):
+            def nll(vals):
+                dm, dc = vals
+                max_flux = self.maximum_flux[idx]
+                model_flux = (
+                    self.rbtl_result['mean_flux'] * 10**(-0.4 * (
+                        (self.rbtl_result['colors'][idx] + dc) * self.rbtl_color_law
+                        + self.rbtl_result['magnitudes'][idx] + dm
+                    ))
+                )
+                fluxerr = np.sqrt(
+                    (self.rbtl_result['fractional_dispersion'] * model_flux)**2
+                    + (self.maximum_fluxerr[idx]**2)
+                )
+
+                nll = 0.5 * np.sum((max_flux - model_flux)**2 / fluxerr**2)
+
+                return nll
+
+            cov = math.calculate_covariance_finite_difference(
+                nll, ['dm', 'dc'], [0., 0.], [(None, None), (None, None)]
+            )
+            mag_err, color_err = np.sqrt(np.diag(cov))
+            mag_errs.append(mag_err)
+            color_errs.append(color_err)
+
+        mag_errs = np.array(mag_errs)
+        color_errs = np.array(color_errs)
+
+        return mag_errs, color_errs
+
     def _parse_rbtl_result(self, result):
         """Parse and save the result of a run of the RBTL analysis"""
         self.rbtl_result = result
