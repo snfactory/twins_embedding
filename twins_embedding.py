@@ -99,9 +99,11 @@ class TwinsEmbeddingAnalysis:
         self.attrition_total_spectra = 0
         self.attrition_salt_daymax = 0
         self.attrition_range = 0
+        self.attrition_explicit = 0
         self.attrition_usable = 0
 
         for supernova in tqdm(self.dataset.targets):
+            # Require at least 5 spectra
             if len(supernova.spectra) < 5:
                 self.print_verbose(
                     "Cutting %s, not enough spectra to guarantee a "
@@ -112,6 +114,7 @@ class TwinsEmbeddingAnalysis:
             self.attrition_enough_spectra += 1
             self.attrition_total_spectra += len(supernova.spectra)
 
+            # Require t0 measured to better than 1 day uncertainty.
             daymax_err = supernova.salt_fit['t0_err']
             if daymax_err > 1.0:
                 self.print_verbose(
@@ -121,6 +124,7 @@ class TwinsEmbeddingAnalysis:
                 continue
             self.attrition_salt_daymax += 1
 
+            # Restrict ourselves to near maximum light.
             range_spectra = supernova.get_spectra_in_range(
                 -self.settings['phase_range'], self.settings['phase_range']
             )
@@ -535,6 +539,7 @@ class TwinsEmbeddingAnalysis:
 
         # Calculate fractional differences from the mean spectrum.
         self.fractional_differences = self.scale_flux / self.mean_flux - 1
+        self.fractional_difference_uncertainties = self.scale_fluxerr / self.mean_flux
 
     def build_masks(self):
         """Build masks that are used in the various manifold learning and magnitude
@@ -573,28 +578,44 @@ class TwinsEmbeddingAnalysis:
                 & (self.rbtl_colors < 0.5)
             )
 
-    def generate_embedding(self, num_neighbors=None, num_components=-1):
-        """Generate a manifold learning embedding."""
-        if num_neighbors is None:
-            num_neighbors = self.settings['isomap_num_neighbors']
+    def generate_embedding(self, num_neighbors=None, num_components=-1, mask=None,
+            model=None, data=None):
+        """Generate a manifold learning embedding.
+        
+        By default we use Isomap with hyperparameters as set in the settings, but
+        this can be overridden by manually specifying any model that follows the
+        sklearn API or hyperparameters.
+        """
+        if model is None:
+            if num_neighbors is None:
+                num_neighbors = self.settings['isomap_num_neighbors']
 
-        if num_components == -1:
-            num_components = self.settings['isomap_num_components']
+            if num_components == -1:
+                num_components = self.settings['isomap_num_components']
 
-        isomap = Isomap(n_neighbors=num_neighbors, n_components=num_components)
+            model = Isomap(n_neighbors=num_neighbors, n_components=num_components)
 
-        good_mask = self.uncertainty_mask
+        if mask is None:
+            good_mask = self.uncertainty_mask
+        else:
+            good_mask = mask
+
+        if data is None:
+            data = self.fractional_differences
 
         # Build the embedding using well-measured targets
-        ref_embedding = isomap.fit_transform(self.fractional_differences[good_mask])
+        ref_embedding = model.fit_transform(data[good_mask])
 
         # Evaluate the coordinates in the embedding for the remaining targets.
-        other_embedding = isomap.transform(self.fractional_differences[~good_mask])
+        if not np.all(good_mask):
+            other_embedding = model.transform(data[~good_mask])
 
         # Combine everything into a single array.
         embedding = np.zeros((len(self.targets), ref_embedding.shape[1]))
         embedding[good_mask] = ref_embedding
-        embedding[~good_mask] = other_embedding
+
+        if not np.all(good_mask):
+            embedding[~good_mask] = other_embedding
 
         # The signs of the embedding are arbitrary... flip the sign of some of them to
         # make them match up with well-known indicators in the literature.

@@ -76,22 +76,24 @@ class ManifoldGaussianProcess():
             'offset',
         ]
 
-        for i in range(self.covariates.shape[0]):
-            parameter_names.append(f'covariate_slope_{i}')
+        if self.covariates is not None:
+            for i in range(self.covariates.shape[0]):
+                parameter_names.append(f'covariate_slope_{i}')
 
         return parameter_names
 
     @property
     def parameter_bounds(self):
         parameter_bounds = [
-            (0., None),
-            (0., 10.),
+            (1e-5, None),
+            (1e-5, None),
             (0.1, None),
             (None, None),
         ]
 
-        for i in range(self.covariates.shape[0]):
-            parameter_bounds.append((None, None))
+        if self.covariates is not None:
+            for i in range(self.covariates.shape[0]):
+                parameter_bounds.append((None, None))
 
         return parameter_bounds
 
@@ -133,40 +135,54 @@ class ManifoldGaussianProcess():
 
         return result
 
-    def fit(self, verbosity=1):
+    def fit(self, cov=True, verbosity=1, options={}, **kwargs):
         """Fit the parameters to the given dataset"""
 
         initial_parameters = self.parameters
 
-        # For some reason BFGS has some convergence issues... use Nelder-Mead instead.
-        # The bounds aren't crucial, they are just requiring that the standard
-        # deviations are greater than zero. We only ever deal with variances anyway, so
-        # there is simply a degeneracy in the likelihood with "negative standard
-        # deviations" that can be flipped to be positive if they are encountered.
+        if cov:
+            # Need a very accurate minimum to be able to measure the covariance since we
+            # are using finite differences.
+            use_options = {
+                'ftol': 1e-14
+            }
+        else:
+            use_options = {}
 
+        use_options.update(options)
+
+        # For some reason BFGS has some convergence issues with default parameters.
+        # Using a small value for ftol fixes this.
         result = minimize(
             self.negative_log_likelihood,
             initial_parameters,
             bounds=self.parameter_bounds,
+            options=use_options,
+            **kwargs,
         )
 
         self.fit_result = result
         self.parameters = result.x
 
-        # Calculate the parameter covariance using a custom code that numerically
-        # estimates the Hessian using a finite difference method with adaptive step
-        # sizes.
+        if cov:
+            # Calculate the parameter covariance using a custom code that numerically
+            # estimates the Hessian using a finite difference method with adaptive step
+            # sizes.
+            param_cov = math.calculate_covariance_finite_difference(
+                self.negative_log_likelihood,
+                self.parameter_names,
+                self.parameters,
+                self.parameter_bounds,
+                verbose=verbosity >= 3,
+                allow_no_effect=True,
+            )
 
-        cov = math.calculate_covariance_finite_difference(
-            self.negative_log_likelihood,
-            self.parameter_names,
-            self.parameters,
-            self.parameter_bounds,
-            verbose=verbosity >= 3,
-        )
-
-        self.parameter_covariance = cov
-        self.parameter_uncertainties = np.sqrt(np.diag(cov))
+            self.parameter_covariance = param_cov
+            self.parameter_uncertainties = np.sqrt(np.diag(param_cov))
+        else:
+            self.parameter_covariance = np.nan * np.ones((len(self.parameters),
+                                                          len(self.parameters)))
+            self.parameter_uncertainties = np.nan * np.ones(len(self.parameters))
 
         # Calculate the residuals for out-of-sample predictions.
         predictions, prediction_uncertainties = self.predict_out_of_sample()
@@ -187,7 +203,10 @@ class ManifoldGaussianProcess():
             for parameter_name, value, uncertainty in \
                     zip(self.parameter_names, self.parameters,
                         self.parameter_uncertainties):
-                print(f"    {parameter_name:25s} {value:.3f} ± {uncertainty:.3f}")
+                if cov:
+                    print(f"    {parameter_name:25s} {value:.3f} ± {uncertainty:.3f}")
+                else:
+                    print(f"    {parameter_name:25s} {value:.3f}")
 
             # Calculate statistics
             good_residuals = self.residuals[self.mask]
@@ -277,9 +296,14 @@ class ManifoldGaussianProcess():
             oos_mask = np.zeros(len(self.target_values), dtype=bool)
             oos_mask[loc] = True
 
+            if self.covariates is not None:
+                use_covariates = self.covariates[:, oos_mask]
+            else:
+                use_covariates = None
+
             prediction, prediction_uncertainty = self.predict(
                 self.coordinates[oos_mask],
-                self.covariates[:, oos_mask],
+                use_covariates,
                 mask=~oos_mask,
                 return_uncertainties=True,
             )
@@ -287,9 +311,14 @@ class ManifoldGaussianProcess():
             predictions[oos_mask] = prediction
             prediction_uncertainties[oos_mask] = prediction_uncertainty
 
+        if self.covariates is not None:
+            use_covariates = self.covariates[:, ~self.mask]
+        else:
+            use_covariates = None
+
         other_predictions, other_prediction_uncertainties = self.predict(
             self.coordinates[~self.mask],
-            self.covariates[:, ~self.mask],
+            use_covariates,
         )
 
         predictions[~self.mask] = other_predictions

@@ -13,7 +13,7 @@ default_settings = {
     "idr": "BLACKSTON",
 
     # Range of phases to allow for spectra in the analysis in restframe days.
-    "phase_range": 5.0,
+    "phase_range": 5.,
 
     # Bin the spectrum with equally space bins in velocity before running the analysis.
     "bin_min_wavelength": 3300.,
@@ -50,7 +50,7 @@ default_settings = {
     "isomap_num_neighbors": 10,
     "isomap_num_components": 3,
 
-    # The signs of Isomap components are arbitrary. Choose to flip some ofthem so that
+    # The signs of Isomap components are arbitrary. Choose to flip some of them so that
     # they match up nicely with previously established observables.
     "isomap_flip_components": [1],
 
