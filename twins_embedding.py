@@ -4,7 +4,6 @@ from idrtools import Dataset, math
 from matplotlib import pyplot as plt
 from matplotlib.colors import ListedColormap
 from matplotlib.gridspec import GridSpec
-from mpl_toolkits.mplot3d import Axes3D
 from scipy.optimize import minimize
 from sklearn.manifold import Isomap
 import extinction
@@ -211,7 +210,7 @@ class TwinsEmbeddingAnalysis:
 
         # Load a dictionary that maps IDR names into IAU ones.
         iau_data = np.genfromtxt('./data/iau_name_map.txt', dtype=str)
-        self.iau_name_map = {i:j for i, j in iau_data}
+        self.iau_name_map = {i: j for i, j in iau_data}
 
     def _check_spectrum(self, spectrum):
         """Check if a spectrum is valid or not"""
@@ -579,9 +578,9 @@ class TwinsEmbeddingAnalysis:
             )
 
     def generate_embedding(self, num_neighbors=None, num_components=-1, mask=None,
-            model=None, data=None):
+                           model=None, data=None):
         """Generate a manifold learning embedding.
-        
+
         By default we use Isomap with hyperparameters as set in the settings, but
         this can be overridden by manually specifying any model that follows the
         sklearn API or hyperparameters.
@@ -692,7 +691,6 @@ class TwinsEmbeddingAnalysis:
         all_si5972 = spectral_indicators["EWSiII5972"]
 
         branch_classifications = []
-        branch_plot_colors = []
 
         for si6355, si5972 in zip(all_si6355, all_si5972):
             if si5972 >= 30:
@@ -965,8 +963,8 @@ class TwinsEmbeddingAnalysis:
             colors = self.rbtl_colors
             condition_mask = self.uncertainty_mask & self.redshift_color_mask
 
-            # Assume that we can ignore measurement uncertainties for the magnitude errors,
-            # so the only contribution is from peculiar velocities.
+            # Assume that we can ignore measurement uncertainties for the magnitude
+            # errors, so the only contribution is from peculiar velocities.
             mag_errs = self.calculate_peculiar_velocity_uncertainties(self.redshifts)
         elif kind == "salt_raw" or kind == "salt":
             if kind == "salt_raw":
@@ -1275,8 +1273,6 @@ class TwinsEmbeddingAnalysis:
         # Calculate reference result
         reference = self.fit_salt_magnitude_residuals(*args, verbosity=0, **kwargs)
 
-        verbosity = kwargs.get('verbosity', self.settings['verbosity'])
-
         # Do bootstrapping
         samples = []
 
@@ -1431,7 +1427,7 @@ class TwinsEmbeddingAnalysis:
 
         if discrete_color_map is not None:
             cmap = ListedColormap(discrete_color_map.values())
-            color_id_map = {j:i for i, j in enumerate(discrete_color_map)}
+            color_id_map = {j: i for i, j in enumerate(discrete_color_map)}
             c12 = [color_id_map[i] for i in c12]
             c13 = [color_id_map[i] for i in c13]
             c32 = [color_id_map[i] for i in c32]
@@ -1482,7 +1478,7 @@ class TwinsEmbeddingAnalysis:
             # Add axes for a colorbar
             colorbar_frac = 0.025
 
-            plot_width = 1 - colorbar_frac# - blank_frac
+            plot_width = 1 - colorbar_frac
             width_1 = plot_width * range_1 / (range_1 + range_3)
             width_3 = plot_width * range_3 / (range_1 + range_3)
 
@@ -1697,3 +1693,131 @@ class TwinsEmbeddingAnalysis:
         path = os.path.join(directory, filename)
 
         return open(path, 'w')
+
+
+class TwinsEmbeddingModel():
+    """A standalone implementation of the Twins Embedding model.
+
+    This can be used to predict the flux of a supernova at any given coordinates in
+    the Twins Embedding. The model will be loaded from data stored in the models
+    directory.
+    """
+    def __init__(self, data=None):
+        if data is None:
+            data = self._load_data('./models/twins_embedding_1.pkl')
+
+        self.data = data
+
+        # Build the GPs
+        self.gps = []
+        for idx in range(len(self.data['gp_parameters'])):
+            gp = ManifoldGaussianProcess(
+                None,
+                self.data['ref_coordinates'][idx],
+                self.data['ref_values'][idx],
+                self.data['ref_uncertainties'][idx],
+                parameters=self.data['gp_parameters'][idx]
+            )
+            self.gps.append(gp)
+
+    def write(self, path):
+        with open(path, 'wb') as f:
+            pickle.dump(self.data, f)
+
+    @classmethod
+    def _load_data(cls, path):
+        with open(path, 'rb') as f:
+            data = pickle.load(f)
+        return data
+
+    @classmethod
+    def load(cls, path):
+        data = cls._load_data(path)
+        return cls(data)
+
+    @property
+    def wave(self):
+        return self.data['wave']
+
+    def evaluate_phase_difference(self, phase):
+        phase_difference = (
+            self.data['phase_slope'] * phase
+            + self.data['phase_quadratic'] * phase * phase
+        )
+
+        return phase_difference
+
+    def evaluate_phase_dispersion(self, phase):
+        coefs = self.data['phase_dispersion_coefficients']
+        num_phase_coefficients = len(coefs)
+        phase_scale = np.abs((num_phase_coefficients / 2)
+                             * (phase / self.data['phase_range']))
+        full_bins = int(np.floor(phase_scale))
+        remainder = phase_scale - full_bins
+
+        phase_coefficients = np.zeros(num_phase_coefficients)
+
+        for j in range(full_bins + 1):
+            if j == full_bins:
+                weight = remainder
+            else:
+                weight = 1
+
+            if weight == 0:
+                break
+
+            if phase > 0:
+                phase_bin = num_phase_coefficients // 2 + j
+            else:
+                phase_bin = num_phase_coefficients // 2 - 1 - j
+
+            phase_coefficients[phase_bin] = weight
+
+        fractional_dispersion = phase_coefficients.dot(coefs)
+
+        return fractional_dispersion
+
+    def evaluate(self, phase, magnitude, color, coordinates):
+        # Make sure that we are in bounds
+        phase_range = self.data['phase_range']
+        if np.abs(phase) > phase_range:
+            raise Exception(f"Invalid phase {phase}, must be between -{phase_range}"
+                            f" and {phase_range}.")
+
+        # Phase shifts
+        phase_difference = self.evaluate_phase_difference(phase)
+        phase_dispersion = self.evaluate_phase_dispersion(phase)
+
+        # Figure out the scale
+        scale = (
+            self.data['mean_flux']
+            * 10**(-0.4 * (
+                magnitude
+                + self.data['color_law'] * color
+                + phase_difference)
+            )
+        )
+
+        # Evaluate each GP
+        pred = []
+        pred_error = []
+        for gp in self.gps:
+            iter_pred, iter_pred_error = gp.predict(coordinates)
+            pred.append(iter_pred)
+            pred_error.append(iter_pred_error)
+
+        pred = (1 + np.array(pred)[:, 0])
+        pred_error = (np.array(pred_error)[:, 0])
+
+        # Apply the scale
+        flux = scale * pred
+        flux_error = scale * pred_error
+
+        # Add in uncertainties from the phase interpolation model. They are measured
+        # in fractions of the flux.
+        flux_error = np.sqrt(
+            flux_error**2
+            + (phase_dispersion * flux)**2
+        )
+
+        return flux, flux_error

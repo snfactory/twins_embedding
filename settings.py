@@ -91,7 +91,7 @@ default_settings = {
     "spectrum_plot_format": "f_nu",
 
     # Default labels for spectrum plots
-    "spectrum_plot_xlabel": "Wavelength ($\AA$)",
+    "spectrum_plot_xlabel": "Wavelength ($\\AA$)",
     "spectrum_plot_ylabel": "Normalized flux\n(erg/$cm^2$/s/Hz)",
 
     # Directory to save LaTeX output to

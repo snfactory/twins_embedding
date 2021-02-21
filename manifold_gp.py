@@ -198,7 +198,7 @@ class ManifoldGaussianProcess():
         )
 
         if verbosity >= 1:
-            print(f"GP magnitude residuals fit:")
+            print("GP magnitude residuals fit:")
             print(f"    Fit result:           {result['message']}")
             for parameter_name, value, uncertainty in \
                     zip(self.parameter_names, self.parameters,
@@ -376,7 +376,7 @@ class ManifoldGaussianProcess():
 
             # Predict the GP residuals over the manifold without covariates.
             predictions = self.predict(plot_coords, return_uncertainties=False)
-            predictions -= self.parameter_dict['offset'] 
+            predictions -= self.parameter_dict['offset']
             predictions -= zeropoint
             predictions = predictions.reshape(plot_x.shape)
 
