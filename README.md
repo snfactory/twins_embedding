@@ -13,6 +13,18 @@ of the code used to generate plots and numbers for Article I, and the
 `standardization_plots.ipynb` notebook was used to produce all of the results shown in
 Article II.
 
+# Usage
+
+The following code can be used to evaluate a pretrained Twins Embedding model:
+
+```
+from twins_embedding import TwinsEmbeddingModel
+
+model = TwinsEmbeddingModel()
+flux, flux_error = model.evaluate(phase=2., magnitude=0.1, color=0.1, coordinates=[0., 1., 2.])
+wave = model.wave
+```
+
 # Acknowledgements
 
 The code used to calculate spectral indicators comes from Sam Dixon
