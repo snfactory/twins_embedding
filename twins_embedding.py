@@ -1236,7 +1236,7 @@ class TwinsEmbeddingAnalysis:
 
         if verbosity >= 1:
             print("SALT2 magnitude residuals fit: ")
-            print(f"    ref_mag: {result['ref_mag']:.3f}")
+            # print(f"    ref_mag: {result['ref_mag']:.3f}")
             print(f"    alpha:   {result['alpha']:.3f}")
             print(f"    beta:    {result['beta']:.3f}")
             print(f"    σ_int:   {result['intrinsic_dispersion']:.3f}")
