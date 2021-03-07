@@ -25,6 +25,19 @@ flux, flux_error = model.evaluate(phase=2., magnitude=0.1, color=0.1, coordinate
 wave = model.wave
 ```
 
+Retraining the full model requires the SNfactory internal data release which is not
+currently publicly available. In this package, we provide all of the code that was used
+to train the model. The estimated spectra at maximum light for each supernova were
+released with Boone et al. 2021a, and can be used to reproduce all of the results beyond
+this step of the analysis. This includes building the Twins Embedding latent space,
+constructing the model that we discuss in the previous section, and performing all
+of the standardization analyses in Boone et al. 2021b.
+
+Some of the indicators discussed in Boone et al. 2021a and host properties discussed in
+Boone et al. 2021b were extracted from other publicly-available papers, and we do not
+have permission to reshare them in this repository. Contact us if you need help
+accessing these data.
+
 # Acknowledgements
 
 The code used to calculate spectral indicators comes from Sam Dixon
