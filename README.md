@@ -28,14 +28,16 @@ wave = model.wave
 ```
 
 In this package, we provide all of the code that was used in the analyses in Boone et al. 2021a
-and 2021b. Rerunning the preprocessing steps and estimating the spectra at maximum light requires
-the SNfactory internal data release which is not currently publicly available, although this package
-does contain the code that was used for these steps. The estimated spectra at maximum light for each supernova were
-released with Boone et al. 2021a and can be found [here](https://snfactory.lbl.gov/snf/data/).
-These spectra can be used to reproduce all of the results beyond the step of estimating spectra
-at maximum light including building the Twins Embedding latent space,
-constructing the Twins Embedding model, and performing all
-of the standardization analyses in Boone et al. 2021b.
+and 2021b. The estimated spectra at maximum light for each supernova were released with Boone et
+al. 2021a and can be found [here](https://snfactory.lbl.gov/snf/data/). These spectra can be used
+to reproduce all of our results beyond
+estimating the spectra at maximum light including building the Twins Embedding latent space,
+constructing the Twins Embedding model, and performing all of the standardization analyses in
+Boone et al. 2021b. Rerunning the preprocessing and estimation of the spectra at maximum light
+requires SNfactory spectra, like those presented in Saunders et al 2019 and Leget et al 2020,
+or the improved versions of those data used in Boone et al 2021a and now being prepared for
+publication. For completeness, and to elucidate the algorithms used, we include in this
+package the code that was used for those steps.
 
 Some of the indicators discussed in Boone et al. 2021a and host properties discussed in
 Boone et al. 2021b were extracted from other publicly-available papers, and we do not
