@@ -1,5 +1,7 @@
 # The Twins Embedding of Type Ia Supernovae
 
+[![DOI](https://zenodo.org/badge/165723542.svg)](https://zenodo.org/badge/latestdoi/165723542)
+
 This repository includes all of the code used to perform the Twins Embedding analysis in
 Boone et al. 2021a and 2021b. This analysis systematically decomposes the
 spectra of Type Ia supernovae into their different components. We use manifold learning
