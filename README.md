@@ -9,9 +9,9 @@ used to standardize Type Ia supernovae.
 This package depends on the kboone/idrtools package to work with data from the Nearby
 Supernova Factory. All of the code used for the main analysis is contained within the
 `twins_embedding.py` file. The `embedding_generation_*.ipynb` notebooks contains all
-of the code used to generate plots and numbers for Article I, and the
+of the code used to generate plots and numbers for Boone et al. 2021a (Paper I), and the
 `standardization_plots.ipynb` notebook was used to produce all of the results shown in
-Article II.
+Boone et al. 2021b (Paper II).
 
 # Usage
 
@@ -25,17 +25,19 @@ flux, flux_error = model.evaluate(phase=2., magnitude=0.1, color=0.1, coordinate
 wave = model.wave
 ```
 
-Retraining the full model requires the SNfactory internal data release which is not
-currently publicly available. In this package, we provide all of the code that was used
-to train the model. The estimated spectra at maximum light for each supernova were
-released with Boone et al. 2021a, and can be used to reproduce all of the results beyond
-this step of the analysis. This includes building the Twins Embedding latent space,
-constructing the model that we discuss in the previous section, and performing all
+In this package, we provide all of the code that was used in the analyses in Boone et al. 2021a
+and 2021b. Rerunning the preprocessing steps and estimating the spectra at maximum light requires
+the SNfactory internal data release which is not currently publicly available, although this package
+does contain the code that was used for these steps. The estimated spectra at maximum light for each supernova were
+released with Boone et al. 2021a and can be found [here](https://snfactory.lbl.gov/snf/data/).
+These spectra can be used to reproduce all of the results beyond the step of estimating spectra
+at maximum light including building the Twins Embedding latent space,
+constructing the Twins Embedding model, and performing all
 of the standardization analyses in Boone et al. 2021b.
 
 Some of the indicators discussed in Boone et al. 2021a and host properties discussed in
 Boone et al. 2021b were extracted from other publicly-available papers, and we do not
-have permission to reshare them in this repository. Contact us if you need help
+have permission to reproduce them in this repository. Contact us if you need help
 accessing these data.
 
 # Acknowledgements
