@@ -15,6 +15,15 @@ of the code used to generate plots and numbers for Boone et al. 2021a (Paper I),
 `standardization_plots.ipynb` notebook was used to produce all of the results shown in
 Boone et al. 2021b (Paper II).
 
+# Installation
+
+Create a new environment with the required dependencies and activate it: 
+
+```
+conda env create -f environment.yml
+conda activate twins_embedding
+```
+
 # Usage
 
 The following code can be used to evaluate a pretrained Twins Embedding model:
