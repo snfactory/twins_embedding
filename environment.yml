@@ -64,5 +64,5 @@ dependencies:
   - zstd=1.5.2=ha9df2e0_1
   - pip:
     - cython==0.29.30
-    - idrtools==0.0
+    - pystan==2.19.1.1
     - git+https://github.com/kboone/idrtools
